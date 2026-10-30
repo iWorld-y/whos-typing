@@ -1,6 +1,6 @@
 # 本地开发与验收
 
-whos-typing MVP 使用 Go 和 MyGo 原生 UI，在一个窗口中运行本地用户 Shell。本版仅提供人工终端交互。
+whos-typing 使用 Go 和 MyGo 原生 UI，在一个窗口中运行本地用户 Shell。用户可以直接操作终端，也可以通过 CLI 将命令发送到同一个会话。
 
 ## 环境与依赖
 
@@ -11,7 +11,7 @@ whos-typing MVP 使用 Go 和 MyGo 原生 UI，在一个窗口中运行本地用
 
 ## 构建
 
-在仓库根目录执行 `make build`，构建产物位于 `output/whos-typing`。
+在仓库根目录执行 `make build`，构建产物为 `output/whos-typing` 和 `output/whos-typing-cli`。
 
 ## 启动
 
@@ -22,6 +22,46 @@ make run
 ```
 
 命令先构建应用，再打开标题为 `Who's Typing` 的原生终端窗口。终端采用用户 Shell，键盘输入直接传给当前会话。
+
+## 使用 CLI 执行命令
+
+先启动 GUI，再在另一个终端执行：
+
+```sh
+./output/whos-typing-cli 'pwd'
+./output/whos-typing-cli 'cd /tmp'
+./output/whos-typing-cli 'pwd'
+```
+
+CLI 将一个字符串交给 GUI 当前的 Shell，窗口会显示命令和输出。命令完成后，CLI 输出同一终端会话中的命令结果，并返回命令的退出状态。示例中的第二条 `pwd` 使用前一条命令设置的工作目录。
+
+当前支持 fish、zsh 和 bash。其他 Shell 仍可在 GUI 使用，但 CLI 会报告不支持。GUI 尚未启动、Shell 正忙、有人工输入尚未提交，或程序无法确认终端空闲时，CLI 会报告原因并以非零状态退出。
+
+终端将标准输出和标准错误合并，CLI 返回的是这一路终端输出，可能包含换行转换和终端控制序列。fish 的 CLI 输出会过滤目录更新序列 OSC 7，包括命令主动打印的相同序列；GUI 仍会处理该序列。后台进程与当前命令共用终端时，输出可能混在一起，注入命令的短暂时段也可能隐藏后台文字输出。
+
+CLI 命令运行期间，GUI 暂停普通键盘和粘贴输入，Ctrl+C 可用于中断前台命令。因此需要交互输入的程序不适合通过 CLI 执行。CLI 自身断开时，GUI 中已启动的命令不会因此自动停止；需要时在 GUI 中按 Ctrl+C。
+
+通信使用当前用户私有的本地 Unix socket。运行时会在私有目录中临时保存命令和捕获的输出，正常结束后删除；进程异常终止时，临时文件可能保留在 `/tmp/whos-typing-<用户 ID>`。
+
+zsh 和 bash 通过 `source` 执行命令，fish 在当前 Shell 中通过 `eval` 执行。依赖脚本上下文的命令可能与直接键入不同；如果 Shell 退出时未发出完成标记，CLI 会报告命令未完成。用户配置移除提示符钩子后，已完成的命令仍返回结果，但后续 CLI 请求可能被拒绝。
+
+## 接入远端 Bash
+
+GUI 通过 SSH 等方式进入远端交互式 Bash 后，可以手动接入当前会话。接入前，确认 GUI 显示的是目标服务器的 Bash 提示符，且没有尚未提交的输入。不要在堡垒机菜单、密码提示或其他交互程序中执行接入命令。
+
+1. 在另一个终端运行 `./output/whos-typing-cli attach --remote --shell bash`，保持该命令运行。
+2. 将 CLI 输出的完整接入命令粘贴到 GUI 的远端 Bash 提示符，按回车执行。
+3. 等待 CLI 显示「远端 Bash 已接入」。随后可在另一个终端运行 `./output/whos-typing-cli 'pwd'` 等命令，命令在已接入的远端 Shell 中执行。
+
+每个远端会话需要接入一次。接入命令会在当前远端 Shell 中设置提示符钩子，不修改 Shell 配置文件。当前远端接入仅支持 Bash；需要交互输入的程序仍应在 GUI 中操作。
+
+远端会话退出后可以继续使用本地 CLI。如果经过堡垒机菜单返回本地 Shell 后 CLI 仍报告终端未就绪，确认 GUI 已显示本地 Shell 的空提示符，再按一次回车，然后重新执行 CLI 命令。
+
+发送命令前，确认 GUI 仍处于预期的远端 Shell。程序会对可观察到的断线或菜单输出保守处理，但 SSH 连接发生变化且终端尚无输出时，无法仅凭终端流可靠识别目标；此时命令可能被随后出现的前台程序接收。
+
+远端提示符出现后，如果后台程序继续输出，CLI 可能报告远端状态未知。确认 GUI 仍显示目标服务器的空提示符后，按一次回车，再执行 CLI 命令；也可以重新接入。
+
+可以使用 `./output/whos-typing-cli --timeout 30s '命令'` 限制等待时间。CLI 超时或断开时，命令可能仍在远端运行，结果未知。不要直接重试；先在 GUI 确认命令状态，必要时按 Ctrl+C。
 
 ## 检查
 
@@ -65,6 +105,10 @@ openspec validate add-native-terminal-mvp --strict
 - 系统键盘注入路径存在待排查问题：System Events 输入的空格和回车未生效，官方 MyGo v0.7.3 终端示例也复现。独立 Cocoa 控件收到了对应按键事件，但当前输入法组合态仍可能影响 MyGo 的处理，尚不能确定根因。自动化文本输入路径的成功不能替代系统键盘验收，本版尚未完成全部交互验收。
 
 本次检查将 Go 模块缓存和构建缓存放在 `/private/tmp` 下。GUI 验证使用上游自动化插件，只在 `e2e` 构建标签下启用；正常构建不包含该测试入口。
+
+同日新增 CLI 后，独立执行 `make build`、`go vet ./...`、`go test ./...` 和 `go test -race ./internal/shell ./internal/control`，均通过。真实 fish 窗口验证了命令与输出显示、退出状态、二进制输出、未提交输入保护、前台 Ctrl+C，以及窗口关闭时 CLI 的错误返回。双向验证中，GUI 切换目录后 CLI 能读取新目录，CLI 设置变量后 GUI 能读取该变量。zsh 和 bash 的窗口验证覆盖了输出、退出状态和 Shell 退出。
+
+Ctrl+C 的早期自动化测试曾有两次失败，当时没有记录发送按键时的焦点。后续在确认窗口和终端焦点后复验通过；窗口处于后台时，自动化工具可能返回成功但不会将按键送到终端，不能据此判断实际键盘行为。
 
 ```sh
 CGO_ENABLED=0 GOWORK=off go build -tags e2e -o /tmp/whos-typing-e2e ./cmd/whos-typing
