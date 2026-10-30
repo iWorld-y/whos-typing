@@ -14,6 +14,11 @@ import (
 	"whos-typing/internal/shell"
 )
 
+type controller struct {
+	*shell.Session
+	*session
+}
+
 // Run 启动应用并等待退出。终端或应用启动失败时返回原因。
 func Run() error {
 	server, err := control.Listen()
@@ -95,7 +100,7 @@ func Run() error {
 				}
 			}
 		}()
-		go server.Serve(sh)
+		go server.Serve(controller{Session: sh, session: s})
 		started = true
 		s.setReady(term, win)
 	})

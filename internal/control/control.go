@@ -49,6 +49,11 @@ type Attacher interface {
 	Attach(context.Context, string, func(string) error) error
 }
 
+// SessionReader 返回窗口当前显示及滚动历史中的文本。
+type SessionReader interface {
+	ReadSession() (string, error)
+}
+
 // Server 管理当前用户的 Unix socket 和相关连接。
 type Server struct {
 	dir      string
@@ -169,6 +174,10 @@ func handle(conn *net.UnixConn, executor Executor) {
 		_, _ = io.Copy(io.Discard, r)
 		cancel()
 	}()
+	if req.Action == "session.read" {
+		handleSessionRead(conn, executor)
+		return
+	}
 	if req.Action == "attach" {
 		attacher, ok := executor.(Attacher)
 		if !ok {

@@ -1,6 +1,7 @@
 package app
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -37,6 +38,24 @@ func (s *session) setReady(term terminalSession, win terminalWindow) {
 	s.window = win
 	s.mu.Unlock()
 	close(s.ready)
+}
+
+// ReadSession 在会话存活时读取终端的屏幕和滚动历史。
+func (s *session) ReadSession() (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return "", errors.New("终端会话已结束")
+	}
+	if s.terminal == nil {
+		return "", errors.New("终端未启动")
+	}
+	select {
+	case <-s.terminal.Done():
+		return "", errors.New("终端会话已结束")
+	default:
+	}
+	return s.terminal.Text(), nil
 }
 
 // onExit 可能由 Close 同步调用，因此不能在回调内等待窗口或关闭窗口。
