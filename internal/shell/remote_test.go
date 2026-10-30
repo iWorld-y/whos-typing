@@ -348,6 +348,38 @@ func TestRemotePreservesPromptAndDebugTrap(t *testing.T) {
 	}
 }
 
+func TestRemoteAttachPromptCommandEndingInSemicolon(t *testing.T) {
+	f := remoteFixtureWithShell(t, "/bin/bash")
+	if _, err := f.s.Write([]byte("PROMPT_COMMAND='printf WT_HOOK_''OK; '\r")); err != nil {
+		t.Fatal(err)
+	}
+	waitText(t, f, "WT_HOOK_OK")
+	attachFixture(t, f)
+	output, code, err := f.run(t, "printf WT_RESULT")
+	if err != nil || code != 0 || !strings.Contains(output, "WT_RESULT") {
+		t.Fatalf("原有提示符命令末尾有分号时执行失败: %q %d %v", output, code, err)
+	}
+	if strings.Contains(f.screen(), "syntax error") {
+		t.Fatalf("提示符命令产生语法错误: %q", f.screen())
+	}
+}
+
+func TestAttachInputErrorDistinguishesPendingKeys(t *testing.T) {
+	r := &remoteSession{bootstrap: "example", input: []byte("example\r")}
+	s := &Session{keys: 2, submitted: 1}
+	if err := r.attachInputError(s); err == nil || !strings.Contains(err.Error(), "按键尚未提交") {
+		t.Fatalf("未识别未提交按键: %v", err)
+	}
+	s.submitted = s.keys
+	if err := r.attachInputError(s); err != nil {
+		t.Fatalf("完整输入应被接受: %v", err)
+	}
+	r.input = []byte("example\rextra")
+	if err := r.attachInputError(s); err == nil || !strings.Contains(err.Error(), "输入 13 字节，期望 8 字节，首处差异位置 9") {
+		t.Fatalf("未拒绝额外输入: %v", err)
+	}
+}
+
 func TestRemotePreservesPromptArray(t *testing.T) {
 	f := remoteFixture(t)
 	if _, err := f.s.Write([]byte("PROMPT_COMMAND=('printf WT_ARRAY_''FIRST' 'printf WT_ARRAY_SECOND')\r")); err != nil {

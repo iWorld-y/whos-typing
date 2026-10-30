@@ -26,7 +26,7 @@ Who's Typing 这个名字来自「谁在我的终端里打字」的想法。窗�
 
 我们希望 Agent 像调用普通命令行工具一样使用 Who's Typing。CLI 提供执行命令、读取会话和接入远端 Bash 的能力；Skill 用于说明调用方法、操作顺序和结果处理，让外部 Agent 沿用自己的命令执行工具来操作终端。
 
-当前版本已经提供 CLI，专用 Skill 尚未随项目提供。
+项目提供 [CLI Skill](skills/whos-typing-cli/SKILL.md)，说明如何读取和操作共享会话。
 
 ## 当前版本
 

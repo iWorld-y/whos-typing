@@ -149,8 +149,8 @@ func remoteBootstrap(token string) string {
 		`{{END}}(){ local s=$1; unset {{DATA}} {{PREVIOUS}}; builtin printf '{{MARK}}E:%s\037' "$s"; return "$s"; };`,
 		`{{ATTR}}=$(declare -p PROMPT_COMMAND 2>/dev/null || :); {{ATTR}}="${{{ATTR}}#declare -}"; {{ATTR}}="${{{ATTR}}%% *}";`,
 		`case "${{{ATTR}}}" in *a*) if (( BASH_VERSINFO[0] > 5 || (BASH_VERSINFO[0] == 5 && BASH_VERSINFO[1] >= 1) )); then PROMPT_COMMAND+=({{PROMPT}});`,
-		`else PROMPT_COMMAND[0]="${PROMPT_COMMAND[0]:+${PROMPT_COMMAND[0]}; }{{PROMPT}}"; fi ;;`,
-		`*) PROMPT_COMMAND="${PROMPT_COMMAND:+${PROMPT_COMMAND}; }{{PROMPT}}" ;; esac;`,
+		`else PROMPT_COMMAND[0]="${PROMPT_COMMAND[0]}"$'\n'{{PROMPT}}; fi ;;`,
+		`*) PROMPT_COMMAND="${PROMPT_COMMAND}"$'\n'{{PROMPT}} ;; esac;`,
 		`unset {{ATTR}}; builtin printf '{{MARK}}I\037'; fi; fi`,
 	}, " ")
 	script = strings.NewReplacer(
@@ -179,6 +179,24 @@ func (r *remoteSession) attachInputMatches() bool {
 	p := bytes.ReplaceAll(r.input, []byte("\x1b[200~"), nil)
 	p = bytes.ReplaceAll(p, []byte("\x1b[201~"), nil)
 	return bytes.Equal(p, []byte(r.bootstrap+"\r")) || bytes.Equal(p, []byte(r.bootstrap+"\n")) || bytes.Equal(p, []byte(r.bootstrap+"\r\n"))
+}
+
+// attachInputError 区分粘贴内容不匹配和仍有未提交按键，不记录输入内容。
+func (r *remoteSession) attachInputError(s *Session) error {
+	if !r.attachInputMatches() {
+		input := bytes.ReplaceAll(r.input, []byte("\x1b[200~"), nil)
+		input = bytes.ReplaceAll(input, []byte("\x1b[201~"), nil)
+		expected := []byte(r.bootstrap + "\r")
+		pos := 0
+		for pos < len(input) && pos < len(expected) && input[pos] == expected[pos] {
+			pos++
+		}
+		return fmt.Errorf("接入期间有其他输入或接入命令不完整（输入 %d 字节，期望 %d 字节，首处差异位置 %d）；请在空提示符重新接入", len(input), len(expected), pos+1)
+	}
+	if s.keys > s.submitted {
+		return errors.New("接入期间有其他输入或按键尚未提交，请在空提示符重新接入")
+	}
+	return nil
 }
 
 func (r *remoteSession) trackInput(s *Session, p []byte) {
@@ -265,8 +283,8 @@ func (s *Session) controlRemote(remote *remoteSession, mark string) bool {
 	switch {
 	case mark == "I":
 		if remote.attaching {
-			if !remote.attachInputMatches() || s.keys > s.submitted {
-				s.failAttach(remote, errors.New("接入期间有其他输入，请在空提示符重新接入"))
+			if err := remote.attachInputError(s); err != nil {
+				s.failAttach(remote, err)
 				return true
 			}
 			remote.installed = true
@@ -297,8 +315,8 @@ func (s *Session) controlRemote(remote *remoteSession, mark string) bool {
 			if !remote.installed {
 				return true
 			}
-			if !remote.attachInputMatches() || s.keys > s.submitted {
-				s.failAttach(remote, errors.New("接入期间有其他输入，请在空提示符重新接入"))
+			if err := remote.attachInputError(s); err != nil {
+				s.failAttach(remote, err)
 				return true
 			}
 			remote.attaching = false
