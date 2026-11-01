@@ -147,7 +147,7 @@ func TestRemoteAttachAndShellState(t *testing.T) {
 	}
 }
 
-func TestRemoteTimeoutReleasesInput(t *testing.T) {
+func TestRemoteTimeoutRequiresTakeoverForInput(t *testing.T) {
 	f := remoteFixture(t)
 	attachFixture(t, f)
 	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
@@ -162,8 +162,12 @@ func TestRemoteTimeoutReleasesInput(t *testing.T) {
 	if active || ready {
 		t.Fatal("超时后输入未释放或远端被误标为就绪")
 	}
+	if !f.s.OnKey(0, ui.KeyA) {
+		t.Fatal("结果未知时 Agent 仍持有控制权，应等待人类接管")
+	}
+	f.s.TakeOver()
 	if f.s.OnKey(0, ui.KeyA) {
-		t.Fatal("超时后 GUI 的人工按键仍被拦截")
+		t.Fatal("人类接管后 GUI 的人工按键仍被拦截")
 	}
 	ctx2, cancel2 := context.WithTimeout(context.Background(), time.Second)
 	defer cancel2()
@@ -514,6 +518,7 @@ func TestRemoteTimeoutInterruptManualCommandAndExit(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitText(t, f, "TOO_LATE")
+	f.s.TakeOver()
 	if _, err := f.s.Write([]byte("printf '%s%s' WT_GUI_ AFTER_TIMEOUT\r")); err != nil {
 		t.Fatal(err)
 	}
@@ -530,6 +535,10 @@ func TestRemoteTimeoutInterruptManualCommandAndExit(t *testing.T) {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+	f.waitReady(t)
+	if err := f.s.ReturnControl(); err != nil {
+		t.Fatalf("确认本地提示符后无法交还: %v", err)
 	}
 	if output, code, err := f.run(t, "printf local"); err != nil || code != 0 || output != "local" {
 		t.Fatalf("退出远端后本地终端未恢复: %q %d %v", output, code, err)
@@ -578,6 +587,7 @@ if [ "$selection" = 0 ]; then printf 'WT_MENU_CLEAN\n'; else printf 'WT_MENU_INJ
 		f.s.mu.Unlock()
 		t.Fatalf("远端退出并出现菜单后仍接受 CLI 命令: %q %d remote=%+v screen=%q", output, code, remote, f.screen())
 	}
+	f.s.TakeOver()
 	if _, err := f.s.Write([]byte("0\n")); err != nil {
 		t.Fatal(err)
 	}
@@ -605,6 +615,9 @@ if [ "$selection" = 0 ]; then printf 'WT_MENU_CLEAN\n'; else printf 'WT_MENU_INJ
 		t.Fatal(err)
 	}
 	f.waitReady(t)
+	if err := f.s.ReturnControl(); err != nil {
+		t.Fatalf("确认本地提示符后无法交还: %v", err)
+	}
 	if output, code, err := f.run(t, "printf local"); err != nil || code != 0 || output != "local" {
 		t.Fatalf("本地空提示符确认后未恢复: %q %d %v", output, code, err)
 	}

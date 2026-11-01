@@ -60,8 +60,16 @@ type Session struct {
 	exitCode int
 
 	mu           sync.Mutex
+	writeMu      sync.Mutex
 	send         func([]byte)
 	onState      func(bool)
+	owner        ControlOwner
+	onControl    func(ControlOwner)
+	idleStarted  time.Time
+	idleVersion  uint64
+	idleCancel   func()
+	idleNow      func() time.Time
+	idleAfter    func(time.Duration, func()) func()
 	initial      bool
 	ready        bool
 	dirty        bool
@@ -70,6 +78,8 @@ type Session struct {
 	submitted    uint64
 	queued       *request
 	active       *request
+	localOrphan  *request
+	unconfirmed  map[*request]struct{}
 	inputBlocked bool
 	remote       *remoteSession
 	retired      []*remoteSession
@@ -320,6 +330,7 @@ func (s *Session) Close() error {
 	s.closeOnce.Do(func() {
 		s.mu.Lock()
 		s.closed = true
+		s.stopIdle()
 		s.mu.Unlock()
 		err = s.pty.Close()
 		if s.initPath != "" {

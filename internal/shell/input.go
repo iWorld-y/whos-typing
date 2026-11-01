@@ -45,12 +45,15 @@ func (s *Session) state(active bool) {
 func (s *Session) OnKey(mods ui.Modifiers, key ui.Key) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.active != nil || (s.remote != nil && s.remote.attaching && s.remote.injected) {
+	if s.blocksHumanInput() {
 		if mods&ui.Ctrl != 0 && key == ui.KeyC {
 			return false
 		}
 		s.inputBlocked = true
 		return true
+	}
+	if s.humanForegroundInput() {
+		return false
 	}
 	if mods&ui.Super != 0 {
 		return false
@@ -71,9 +74,12 @@ func (s *Session) OnKey(mods ui.Modifiers, key ui.Key) bool {
 func (s *Session) OnPaste() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.active != nil || (s.remote != nil && s.remote.attaching && s.remote.injected) {
+	if s.blocksHumanInput() {
 		s.inputBlocked = true
 		return true
+	}
+	if s.humanForegroundInput() {
+		return false
 	}
 	s.dirty = true
 	if s.remote != nil && !s.remote.attaching {
@@ -88,6 +94,10 @@ func (s *Session) Execute(ctx context.Context, command string) control.Result {
 	if s.closed {
 		s.mu.Unlock()
 		return control.Result{Err: errors.New("终端会话已结束")}
+	}
+	if s.owner == ControlHumanTakeover {
+		s.mu.Unlock()
+		return control.Result{Err: errors.New("终端已由人类接管，请等待交还 Agent")}
 	}
 	remote := s.remote != nil && !s.remote.attaching
 	if s.remote != nil && s.remote.attaching {
@@ -138,6 +148,8 @@ func (s *Session) Execute(ctx context.Context, command string) control.Result {
 	r := &request{command: command, source: sourceName, output: output, done: make(chan struct{}), remote: remote}
 	r.barrier = []byte("\x00WT-REQUEST:" + s.token + ":" + filepath.Base(output.Name()))
 	s.queued = r
+	s.stopIdle()
+	s.setControl(ControlAgent)
 	s.send(r.barrier)
 	s.mu.Unlock()
 	select {
@@ -152,6 +164,10 @@ func (s *Session) Execute(ctx context.Context, command string) control.Result {
 		if s.queued == r {
 			s.queued = nil
 			_ = os.Remove(r.source)
+			s.startIdle()
+		}
+		if s.active == r && !r.finished {
+			s.markUnknown(r)
 		}
 		if r.remote && s.remote != nil && s.active == r {
 			s.remote.orphan = r
@@ -190,6 +206,12 @@ func (s *Session) Write(p []byte) (int, error) {
 			s.failAttach(r, err)
 			return len(p), nil
 		}
+		if s.owner == ControlHumanTakeover {
+			s.failAttach(r, errors.New("终端已由人类接管，远端接入未发送"))
+			return len(p), nil
+		}
+		s.stopIdle()
+		s.setControl(ControlAgent)
 		payload := []byte(r.bootstrap + "\r")
 		r.input = append([]byte(nil), payload...)
 		r.injected = true
@@ -197,12 +219,14 @@ func (s *Session) Write(p []byte) (int, error) {
 		s.state(true)
 		s.parsed = append(s.parsed, []byte("\r\n[CLI] 正在接入远端 Bash\r\n")...)
 		s.mu.Unlock()
+		s.writeMu.Lock()
 		n, err := s.pty.Write(payload)
 		s.mu.Lock()
 		r.injecting = false
 		if r.resetWrite {
 			_ = s.pty.SetWriteDeadline(time.Time{})
 		}
+		s.writeMu.Unlock()
 		if err == nil && n != len(payload) {
 			err = io.ErrShortWrite
 		}
@@ -217,17 +241,13 @@ func (s *Session) Write(p []byte) (int, error) {
 			return len(p), nil
 		}
 		line := p[len("\x00WT-INJECT:"+s.token+":"+filepath.Base(r.output.Name())+":"):]
-		r.injecting = true
-		s.mu.Unlock()
-		_, err := s.pty.Write(line)
-		s.mu.Lock()
-		r.injecting = false
-		if r.resetWriteDeadline {
-			_ = s.pty.SetWriteDeadline(time.Time{})
-		}
+		r.inject = nil
+		_, err := s.writeAgentPTY(r, line)
 		if err != nil && s.active == r {
 			s.active = nil
 			s.remote.ready = false
+			s.remote.orphan = r
+			s.markUnknown(r)
 			s.state(false)
 			s.finish(r, 1, fmt.Errorf("发送远端命令失败，结果未知: %w", err))
 		}
@@ -274,10 +294,12 @@ func (s *Session) Write(p []byte) (int, error) {
 			restore := "__wt_restore_" + s.token
 			line = fmt.Sprintf("%s; set -g %s (string collect -N < %s); %s; eval \"$%s\"; %s $status\r", s.begin, command, path, restore, command, s.end)
 		}
-		if _, err := s.writePTY([]byte(line)); err != nil && s.active == r {
+		if _, err := s.writeAgentPTY(r, []byte(line)); err != nil && s.active == r {
 			s.active = nil
+			s.localOrphan = r
+			s.markUnknown(r)
 			s.state(false)
-			s.finish(r, 1, fmt.Errorf("发送命令失败: %w", err))
+			s.finish(r, 1, fmt.Errorf("发送命令失败，结果未知: %w", err))
 		}
 		return len(p), nil
 	}
@@ -287,7 +309,7 @@ func (s *Session) Write(p []byte) (int, error) {
 	if terminalReply.Match(p) {
 		return s.writePTY(p)
 	}
-	if s.active != nil || (s.remote != nil && s.remote.attaching && s.remote.injected) {
+	if s.blocksHumanInput() {
 		if isInterrupt(p) {
 			remote := s.remote
 			_, err := s.writePTY([]byte{3})
@@ -299,6 +321,12 @@ func (s *Session) Write(p []byte) (int, error) {
 		// 输入法和终端协议回复可能没有 OnKey，不能回放到 Shell。
 		s.inputBlocked = true
 		return len(p), nil
+	}
+	if s.humanForegroundInput() {
+		if r := s.remote; r != nil && r.attaching && r.injected {
+			r.input = append(r.input, p...)
+		}
+		return s.writePTY(p)
 	}
 	if r := s.remote; r != nil {
 		if r.attaching {
@@ -317,8 +345,29 @@ func (s *Session) Write(p []byte) (int, error) {
 // writePTY 写入期间释放状态锁，让输出读取和取消操作能够继续。
 func (s *Session) writePTY(p []byte) (int, error) {
 	s.mu.Unlock()
+	s.writeMu.Lock()
+	n, err := s.pty.Write(p)
+	s.writeMu.Unlock()
+	s.mu.Lock()
+	return n, err
+}
+
+// writeAgentPTY 允许接管或取消唤醒阻塞的 Agent 写入。
+func (s *Session) writeAgentPTY(r *request, p []byte) (int, error) {
+	r.injecting = true
+	s.mu.Unlock()
+	s.writeMu.Lock()
 	n, err := s.pty.Write(p)
 	s.mu.Lock()
+	r.injecting = false
+	if r.resetWriteDeadline {
+		_ = s.pty.SetWriteDeadline(time.Time{})
+		r.resetWriteDeadline = false
+	}
+	s.writeMu.Unlock()
+	if err == nil && n != len(p) {
+		err = io.ErrShortWrite
+	}
 	return n, err
 }
 

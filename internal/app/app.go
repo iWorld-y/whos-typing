@@ -61,12 +61,13 @@ func Run() error {
 		sh.SetSender(term.Send)
 
 		confirmation := &attachConfirmation{}
+		controlView := &controlView{control: sh}
 		win := mygo.NewWindow(mygo.WindowOptions{
 			Title:  "Who's Typing",
 			Width:  760,
 			Height: 480,
 			Content: ui.View(func(c *ui.Context) {
-				terminal.View(c, term).Fill().AutoFocus()
+				controlView.view(c, func() { terminal.View(c, term).Fill().AutoFocus() })
 				confirmation.view(c)
 			}),
 		})
@@ -75,17 +76,17 @@ func Run() error {
 			s.close()
 			mygo.App.Quit()
 		})
-		state := make(chan bool, 1)
-		sh.SetStateHandler(func(active bool) {
+		state := make(chan shell.ControlOwner, 1)
+		sh.SetControlHandler(func(owner shell.ControlOwner) {
 			select {
-			case state <- active:
+			case state <- owner:
 			default:
 				select {
 				case <-state:
 				default:
 				}
 				select {
-				case state <- active:
+				case state <- owner:
 				default:
 				}
 			}
@@ -93,12 +94,11 @@ func Run() error {
 		go func() {
 			for {
 				select {
-				case active := <-state:
-					title := "Who's Typing"
-					if active {
-						title += "（CLI 执行中，输入暂停，Ctrl+C 可中断）"
-					}
-					win.SetTitle(title)
+				case owner := <-state:
+					win.Update(func() {
+						controlView.owner = owner
+						controlView.message = ""
+					})
 				case <-stopUpdates:
 					return
 				}

@@ -10,6 +10,21 @@ import (
 )
 
 func main() {
+	if len(os.Args) == 3 && os.Args[1] == "session" && os.Args[2] == "status" {
+		if err := control.SessionStatus(os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
+	if len(os.Args) == 3 && os.Args[1] == "session" && os.Args[2] == "release" {
+		if err := control.ReleaseSession(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		fmt.Fprintln(os.Stdout, "已交还终端控制权。")
+		return
+	}
 	if len(os.Args) == 3 && os.Args[1] == "session" && os.Args[2] == "read" {
 		if err := control.ReadSession(os.Stdout); err != nil {
 			fmt.Fprintln(os.Stderr, err)
@@ -45,7 +60,7 @@ func main() {
 		os.Exit(code)
 	}
 	if len(os.Args) != 2 {
-		fmt.Fprintln(os.Stderr, "用法: whos-typing-cli [--timeout 时间] '命令'\n      whos-typing-cli attach --remote --shell bash [--auto]\n      whos-typing-cli session read")
+		fmt.Fprintln(os.Stderr, "用法: whos-typing-cli [--timeout 时间] '命令'\n      whos-typing-cli attach --remote --shell bash [--auto]\n      whos-typing-cli session {read|status|release}")
 		os.Exit(2)
 	}
 	code, err := control.Run(os.Args[1], os.Stdout)

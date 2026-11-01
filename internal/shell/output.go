@@ -230,8 +230,14 @@ func (s *Session) control(mark string) bool {
 			} else {
 				s.captureOutput(r, nil, true)
 				s.finish(r, 1, errors.New("Shell 返回提示符，但未报告命令完成状态"))
+				s.startIdle()
 			}
+			s.confirmFinished(r)
 			s.reportBlockedInput()
+		} else if s.localOrphan != nil {
+			s.confirmFinished(s.localOrphan)
+			s.localOrphan = nil
+			s.startIdle()
 		} else if s.pending > 0 {
 			s.pending--
 		}
@@ -239,12 +245,15 @@ func (s *Session) control(mark string) bool {
 			s.reportBlockedInput()
 		}
 		s.ready = s.pending == 0 && !s.dirty
+		s.armIdle()
 		return true
 	case mark == "S":
 		if s.active != nil {
 			command := strings.ReplaceAll(s.active.command, "\n", "\r\n")
 			s.parsed = append(s.parsed, []byte("\r\n[CLI] "+command+"\r\n")...)
 			s.active.started = true
+		} else if s.localOrphan != nil {
+			s.localOrphan.started = true
 		}
 		return true
 	case strings.HasPrefix(mark, "E:"):
@@ -256,7 +265,13 @@ func (s *Session) control(mark string) bool {
 			s.captureOutput(r, nil, true)
 			r.finished = true
 			r.exitCode = code
+			s.confirmFinished(r)
+			s.startIdle()
 			time.AfterFunc(2*time.Second, func() { s.finishWithoutPrompt(r) })
+		} else if r := s.localOrphan; r != nil && r.started {
+			r.finished = true
+			s.confirmFinished(r)
+			s.startIdle()
 		}
 		return true
 	}

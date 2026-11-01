@@ -37,6 +37,7 @@ type remoteSession struct {
 	changed    bool
 	auto       []byte
 	autoCtx    context.Context
+	autoCancel context.CancelFunc
 	injected   bool
 	injecting  bool
 	resetWrite bool
@@ -108,9 +109,23 @@ func (s *Session) AttachAuto(ctx context.Context, shellName string, confirm func
 	if confirm == nil {
 		return errors.New("远端接入需要窗口确认")
 	}
+	s.mu.Lock()
+	manual := s.owner == ControlHumanTakeover
+	s.mu.Unlock()
+	if manual {
+		return errors.New("终端已由人类接管，请等待交还 Agent")
+	}
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
 	err := s.Attach(ctx, shellName, func(script string) error {
+		s.mu.Lock()
+		r := s.remote
+		if r == nil || !r.attaching || s.owner == ControlHumanTakeover {
+			s.mu.Unlock()
+			return errors.New("终端已由人类接管，远端接入已取消")
+		}
+		r.autoCancel = cancel
+		s.mu.Unlock()
 		if err := confirm(ctx); err != nil {
 			return err
 		}
@@ -131,6 +146,9 @@ func (s *Session) queueAttach(ctx context.Context, script string) error {
 	r := s.remote
 	if r == nil || !r.attaching || r.bootstrap != script || s.closed || s.send == nil {
 		return errors.New("远端接入已经结束")
+	}
+	if s.owner == ControlHumanTakeover {
+		return errors.New("终端已由人类接管，请等待交还 Agent")
 	}
 	if err := ctx.Err(); err != nil {
 		return err
@@ -407,6 +425,7 @@ func (s *Session) controlRemote(remote *remoteSession, mark string) bool {
 			if remote.injected {
 				s.state(false)
 				s.reportBlockedInput()
+				s.startIdle()
 			}
 			remote.attachDone <- nil
 			return true
@@ -434,6 +453,7 @@ func (s *Session) controlRemote(remote *remoteSession, mark string) bool {
 				remote.exit = false
 			}
 		}
+		s.armIdle()
 		return true
 	case mark == "S":
 		if r := s.active; r != nil && r.remote {
@@ -453,9 +473,13 @@ func (s *Session) controlRemote(remote *remoteSession, mark string) bool {
 			s.captureOutput(r, nil, true)
 			r.finished = true
 			r.exitCode = code
+			s.confirmFinished(r)
+			s.startIdle()
 			time.AfterFunc(2*time.Second, func() { s.finishWithoutPrompt(r) })
 		} else if remote.orphan != nil && remote.orphan.started {
 			remote.orphan.finished = true
+			s.confirmFinished(remote.orphan)
+			s.startIdle()
 		}
 		return true
 	}
@@ -491,6 +515,7 @@ func (s *Session) remoteDisconnected() {
 				_ = s.pty.SetWriteDeadline(time.Now())
 			}
 			s.captureOutput(r, nil, true)
+			s.markUnknown(r)
 			s.active = nil
 			s.state(false)
 			s.finish(r, 1, errors.New("远端连接已结束，命令结果未知"))

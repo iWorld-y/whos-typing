@@ -41,8 +41,89 @@ func TestAutomaticRemoteAttachAfterConfirmation(t *testing.T) {
 	if err := <-done; err != nil {
 		t.Fatalf("自动接入失败: %v", err)
 	}
+	if got := f.s.ControlOwner(); got != ControlAgent {
+		t.Fatalf("自动输入接入命令后应由 Agent 控制: %v", got)
+	}
 	if output, code, err := f.run(t, "printf attached"); err != nil || code != 0 || output != "attached" {
 		t.Fatalf("自动接入后不能执行命令: %q %d %v", output, code, err)
+	}
+}
+
+func TestAutomaticRemoteAttachRejectedDuringTakeover(t *testing.T) {
+	f := remoteFixture(t)
+	f.s.mu.Lock()
+	f.s.setControl(ControlAgent)
+	f.s.mu.Unlock()
+	f.s.TakeOver()
+	confirmed := false
+	err := f.s.AttachAuto(context.Background(), "bash", func(context.Context) error {
+		confirmed = true
+		return nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "人类") || confirmed {
+		t.Fatalf("人类接管期间应拒绝自动接入: confirmed=%v err=%v", confirmed, err)
+	}
+	if strings.Contains(f.screen(), "__wt_prompt_") {
+		t.Fatal("人类接管期间发送了远端接入命令")
+	}
+}
+
+func TestTakeOverCancelsAutomaticAttachConfirmation(t *testing.T) {
+	f := remoteFixture(t)
+	f.s.mu.Lock()
+	f.s.setControl(ControlAgent)
+	f.s.mu.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	prompted := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		done <- f.s.AttachAuto(ctx, "bash", func(ctx context.Context) error {
+			close(prompted)
+			<-ctx.Done()
+			return ctx.Err()
+		})
+	}()
+	<-prompted
+	f.s.TakeOver()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("人类接管后自动接入应取消")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("接管后自动接入确认仍在等待")
+	}
+}
+
+func TestTakeOverCancelsQueuedAutomaticAttach(t *testing.T) {
+	f := remoteFixture(t)
+	f.s.mu.Lock()
+	f.s.setControl(ControlAgent)
+	f.s.mu.Unlock()
+	queued := make(chan []byte, 1)
+	f.s.SetSender(func(p []byte) { queued <- append([]byte(nil), p...) })
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- f.s.AttachAuto(ctx, "bash", func(context.Context) error { return nil })
+	}()
+	var pending []byte
+	select {
+	case pending = <-queued:
+	case <-ctx.Done():
+		t.Fatal("未收到排队的接入请求")
+	}
+	f.s.TakeOver()
+	if _, err := f.s.Write(pending); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err == nil {
+		t.Fatal("人类接管后未发送的自动接入应取消")
+	}
+	if strings.Contains(f.screen(), "__wt_prompt_") {
+		t.Fatal("接管后仍发送了自动接入命令")
 	}
 }
 

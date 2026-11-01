@@ -30,6 +30,7 @@ type response struct {
 	Size     int64  `json:"size"`
 	Phase    string `json:"phase,omitempty"`
 	Script   string `json:"script,omitempty"`
+	Control  string `json:"control,omitempty"`
 }
 
 // Result 包含终端原始输出、退出码及无法完成时的错误。
@@ -57,6 +58,12 @@ type AutoAttacher interface {
 // SessionReader 返回窗口当前显示及滚动历史中的文本。
 type SessionReader interface {
 	ReadSession() (string, error)
+}
+
+// ControlManager 读取和主动交还当前终端控制权。
+type ControlManager interface {
+	ControlStatus() string
+	ReleaseControl() error
 }
 
 // Server 管理当前用户的 Unix socket 和相关连接。
@@ -181,6 +188,23 @@ func handle(conn *net.UnixConn, executor Executor) {
 	}()
 	if req.Action == "session.read" {
 		handleSessionRead(conn, executor)
+		return
+	}
+	if req.Action == "session.status" || req.Action == "session.release" {
+		manager, ok := executor.(ControlManager)
+		if !ok {
+			_ = json.NewEncoder(conn).Encode(response{Error: "终端不支持控制权管理"})
+			return
+		}
+		reply := response{}
+		if req.Action == "session.release" {
+			if err := manager.ReleaseControl(); err != nil {
+				reply.Error = err.Error()
+			}
+		} else {
+			reply.Control = manager.ControlStatus()
+		}
+		_ = json.NewEncoder(conn).Encode(reply)
 		return
 	}
 	if req.Action == "attach" {
@@ -324,6 +348,58 @@ func runTimed(path, command string, timeout time.Duration, out io.Writer) (int, 
 func timeoutError(err error) bool {
 	var netErr net.Error
 	return errors.As(err, &netErr) && netErr.Timeout()
+}
+
+// SessionStatus 输出当前终端控制方。
+func SessionStatus(out io.Writer) error {
+	return sessionStatus(socketPath(directory()), out)
+}
+
+func sessionStatus(path string, out io.Writer) error {
+	reply, err := sessionControl(path, "session.status")
+	if err != nil {
+		return err
+	}
+	switch reply.Control {
+	case "human", "agent", "human_takeover":
+		_, err = fmt.Fprintln(out, reply.Control)
+		return err
+	default:
+		return errors.New("终端控制权响应格式错误")
+	}
+}
+
+// ReleaseSession 主动交还 Agent 对终端的控制权。
+func ReleaseSession() error {
+	return sessionRelease(socketPath(directory()))
+}
+
+func sessionRelease(path string) error {
+	_, err := sessionControl(path, "session.release")
+	return err
+}
+
+func sessionControl(path, action string) (response, error) {
+	conn, err := net.DialTimeout("unix", path, 2*time.Second)
+	if err != nil {
+		return response{}, fmt.Errorf("无法连接 Who's Typing 窗口: %w", err)
+	}
+	defer conn.Close()
+	if err := json.NewEncoder(conn).Encode(request{Action: action}); err != nil {
+		return response{}, fmt.Errorf("发送控制权请求失败: %w", err)
+	}
+	line, err := bufio.NewReader(conn).ReadBytes('\n')
+	if err != nil {
+		return response{}, fmt.Errorf("终端连接已断开: %w", err)
+	}
+	var reply response
+	if err := json.Unmarshal(line, &reply); err != nil {
+		return response{}, errors.New("终端响应格式错误")
+	}
+	if reply.Error != "" {
+		return response{}, errors.New(reply.Error)
+	}
+	return reply, nil
 }
 
 // AttachRemote 显示一次性接入命令并等待用户在远端执行。
