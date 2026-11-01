@@ -17,6 +17,13 @@ func main() {
 		}
 		return
 	}
+	if len(os.Args) == 6 && os.Args[1] == "attach" && os.Args[2] == "--remote" && os.Args[3] == "--shell" && os.Args[5] == "--auto" {
+		if err := control.AttachRemoteAuto(os.Args[4], os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	if len(os.Args) == 5 && os.Args[1] == "attach" && os.Args[2] == "--remote" && os.Args[3] == "--shell" {
 		if err := control.AttachRemote(os.Args[4], os.Stdout); err != nil {
 			fmt.Fprintln(os.Stderr, err)
@@ -38,7 +45,7 @@ func main() {
 		os.Exit(code)
 	}
 	if len(os.Args) != 2 {
-		fmt.Fprintln(os.Stderr, "用法: whos-typing-cli [--timeout 时间] '命令'\n      whos-typing-cli attach --remote --shell bash\n      whos-typing-cli session read")
+		fmt.Fprintln(os.Stderr, "用法: whos-typing-cli [--timeout 时间] '命令'\n      whos-typing-cli attach --remote --shell bash [--auto]\n      whos-typing-cli session read")
 		os.Exit(2)
 	}
 	code, err := control.Run(os.Args[1], os.Stdout)

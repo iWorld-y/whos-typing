@@ -45,7 +45,7 @@ func (s *Session) state(active bool) {
 func (s *Session) OnKey(mods ui.Modifiers, key ui.Key) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.active != nil {
+	if s.active != nil || (s.remote != nil && s.remote.attaching && s.remote.injected) {
 		if mods&ui.Ctrl != 0 && key == ui.KeyC {
 			return false
 		}
@@ -71,7 +71,7 @@ func (s *Session) OnKey(mods ui.Modifiers, key ui.Key) bool {
 func (s *Session) OnPaste() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.active != nil {
+	if s.active != nil || (s.remote != nil && s.remote.attaching && s.remote.injected) {
 		s.inputBlocked = true
 		return true
 	}
@@ -176,6 +176,41 @@ func (s *Session) Execute(ctx context.Context, command string) control.Result {
 func (s *Session) Write(p []byte) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if bytes.HasPrefix(p, []byte("\x00WT-ATTACH:"+s.token+":")) {
+		r := s.remote
+		if r == nil || !r.attaching || !bytes.Equal(p, r.auto) {
+			return len(p), nil
+		}
+		r.auto = nil
+		if err := r.autoCtx.Err(); err != nil {
+			s.failAttach(r, err)
+			return len(p), nil
+		}
+		if err := s.checkAutoAttach(r); err != nil {
+			s.failAttach(r, err)
+			return len(p), nil
+		}
+		payload := []byte(r.bootstrap + "\r")
+		r.input = append([]byte(nil), payload...)
+		r.injected = true
+		r.injecting = true
+		s.state(true)
+		s.parsed = append(s.parsed, []byte("\r\n[CLI] 正在接入远端 Bash\r\n")...)
+		s.mu.Unlock()
+		n, err := s.pty.Write(payload)
+		s.mu.Lock()
+		r.injecting = false
+		if r.resetWrite {
+			_ = s.pty.SetWriteDeadline(time.Time{})
+		}
+		if err == nil && n != len(payload) {
+			err = io.ErrShortWrite
+		}
+		if err != nil && s.remote == r {
+			s.failAttach(r, fmt.Errorf("发送远端接入命令失败，结果未知: %w", err))
+		}
+		return len(p), nil
+	}
 	if bytes.HasPrefix(p, []byte("\x00WT-INJECT:"+s.token+":")) {
 		r := s.active
 		if r == nil || !r.remote || !bytes.Equal(p, r.inject) {
@@ -252,9 +287,13 @@ func (s *Session) Write(p []byte) (int, error) {
 	if terminalReply.Match(p) {
 		return s.writePTY(p)
 	}
-	if s.active != nil {
+	if s.active != nil || (s.remote != nil && s.remote.attaching && s.remote.injected) {
 		if isInterrupt(p) {
+			remote := s.remote
 			_, err := s.writePTY([]byte{3})
+			if remote != nil && s.remote == remote && remote.attaching && remote.injected {
+				s.failAttach(remote, errors.New("远端接入已中断，接入命令可能已执行，请确认远端状态"))
+			}
 			return len(p), err
 		}
 		// 输入法和终端协议回复可能没有 OnKey，不能回放到 Shell。

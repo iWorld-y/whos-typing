@@ -17,11 +17,14 @@ import (
 // Read 转发原始终端输出，并从字节流中识别和移除本会话标记。
 func (s *Session) Read(p []byte) (int, error) {
 	for {
+		s.mu.Lock()
 		if len(s.parsed) != 0 {
 			n := copy(p, s.parsed)
 			s.parsed = s.parsed[n:]
+			s.mu.Unlock()
 			return n, nil
 		}
+		s.mu.Unlock()
 		buf := make([]byte, 64<<10)
 		n, err := s.pty.Read(buf)
 		if n > 0 {
@@ -31,11 +34,14 @@ func (s *Session) Read(p []byte) (int, error) {
 		if err != nil {
 			s.parse(true)
 			s.onEnd()
+			s.mu.Lock()
 			if len(s.parsed) != 0 {
 				n := copy(p, s.parsed)
 				s.parsed = s.parsed[n:]
+				s.mu.Unlock()
 				return n, nil
 			}
+			s.mu.Unlock()
 			return 0, io.EOF
 		}
 	}
@@ -121,6 +127,12 @@ func (s *Session) emit(p []byte) {
 	s.mu.Lock()
 	if !s.initSeen {
 		p = s.filterInitEcho(p, false)
+	}
+	if remote := s.remote; remote != nil && remote.attaching && !remote.injected && len(p) != 0 {
+		remote.changed = true
+	}
+	if remote := s.remote; remote != nil && remote.attaching && remote.injected && !remote.echoDone {
+		p = remote.filterAttachEcho(p, false)
 	}
 	if remote := s.remote; remote != nil && remote.ready && s.active == nil {
 		remote.observeOutput(p)
@@ -293,6 +305,50 @@ func (s *Session) filterInitEcho(p []byte, flush bool) []byte {
 		}
 	}
 	return out
+}
+
+// filterAttachEcho 仅移除自动接入命令的回显，保留其他终端输出。
+func (r *remoteSession) filterAttachEcho(p []byte, flush bool) []byte {
+	if r.echoDone {
+		return p
+	}
+	r.echo = append(r.echo, p...)
+	var out []byte
+	expected := []byte(r.bootstrap)
+	if len(r.echo) > len(expected)+(64<<10) {
+		flush = true
+	}
+	for len(r.echo) != 0 {
+		pos := bytes.IndexByte(r.echo, expected[0])
+		if pos < 0 {
+			out = append(out, r.echo...)
+			r.echo = nil
+			break
+		}
+		out = append(out, r.echo[:pos]...)
+		r.echo = r.echo[pos:]
+		consumed, incomplete := matchEcho(r.echo, expected)
+		if consumed > 0 {
+			out = append(out, r.echo[consumed:]...)
+			r.echo = nil
+			r.echoDone = true
+			break
+		}
+		if incomplete && !flush {
+			break
+		}
+		out = append(out, r.echo[0])
+		r.echo = r.echo[1:]
+	}
+	return out
+}
+
+// flushAttachEcho 由持有 s.mu 的调用方调用，保留无法确认的终端输出。
+func (s *Session) flushAttachEcho(r *remoteSession) {
+	if r.injected && !r.echoDone {
+		s.parsed = append(s.parsed, r.filterAttachEcho(nil, true)...)
+		r.echoDone = true
+	}
 }
 
 // matchEcho 匹配 Shell 行编辑器回显，允许字符之间存在终端 CSI 序列。

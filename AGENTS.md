@@ -39,7 +39,7 @@ openspec validate --specs --strict
 - 遵循现有 Go 格式和中文注释；使用 `gofmt`。错误保留上下文和原因，例如 `return nil, fmt.Errorf("启动 Shell 失败: %w", err)`。
 - 本地 CLI 命令复用 GUI 的 Shell 会话；人工输入、并发请求及 Ctrl+C 的处理依赖 `internal/shell/` 的状态和标记，不要绕过它们直接写入 PTY。
 - `session read` 读取屏幕和滚动历史的文本快照，不向 Shell 注入输入；其 10000 个 Unicode 码点上限及末尾重复行处理位于 `internal/control/session_read.go`。
-- 远端接入仅支持由用户在远端 Bash 提示符手动执行接入命令。超时或连接断开时，命令结果可能未知，不应自动重试或假定命令已停止。
+- 远端接入仅支持交互式 Bash。用户确认目标和空提示符后，可由窗口自动输入接入命令，也可由用户手动执行；不得向密码提示或交互程序注入输入。超时或连接断开时，命令结果可能未知，不应自动重试或假定命令已停止。
 
 ## 边界
 

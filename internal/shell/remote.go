@@ -32,6 +32,16 @@ type remoteSession struct {
 	orphan     *request
 	prompt     string
 	idleOutput []byte
+	group      int
+	keys       uint64
+	changed    bool
+	auto       []byte
+	autoCtx    context.Context
+	injected   bool
+	injecting  bool
+	resetWrite bool
+	echo       []byte
+	echoDone   bool
 }
 
 // Attach 等待用户在远端 Bash 中手动执行接入命令；它不会写入终端。
@@ -60,6 +70,8 @@ func (s *Session) Attach(ctx context.Context, shellName string, show func(string
 		s.mu.Unlock()
 		return errors.New("无法确认外层 Shell 正在运行远端连接")
 	}
+	r.group = group
+	r.keys = s.keys
 	if s.remote != nil {
 		s.retired = append(s.retired, s.remote)
 	}
@@ -75,15 +87,73 @@ func (s *Session) Attach(ctx context.Context, shellName string, show func(string
 	case err := <-r.attachDone:
 		return err
 	case <-ctx.Done():
-		s.cancelAttach(r)
+		sent := s.cancelAttach(r)
+		if sent {
+			return errors.New("远端接入已取消，接入命令可能已执行，请确认远端状态")
+		}
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			return errors.New("远端接入超时，请重新接入")
 		}
 		return errors.New("远端接入已取消")
 	case <-timer.C:
-		s.cancelAttach(r)
+		if s.cancelAttach(r) {
+			return errors.New("远端接入超时，接入命令可能已执行，请确认远端状态")
+		}
 		return errors.New("远端接入超时，请重新接入")
 	}
+}
+
+// AttachAuto 等待界面确认后，将接入命令排入终端输入队列。
+func (s *Session) AttachAuto(ctx context.Context, shellName string, confirm func(context.Context) error) error {
+	if confirm == nil {
+		return errors.New("远端接入需要窗口确认")
+	}
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
+	err := s.Attach(ctx, shellName, func(script string) error {
+		if err := confirm(ctx); err != nil {
+			return err
+		}
+		return s.queueAttach(ctx, script)
+	})
+	if errors.Is(err, context.DeadlineExceeded) {
+		return errors.New("远端接入超时，请重新确认")
+	}
+	if errors.Is(err, context.Canceled) {
+		return errors.New("远端接入已取消")
+	}
+	return err
+}
+
+func (s *Session) queueAttach(ctx context.Context, script string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r := s.remote
+	if r == nil || !r.attaching || r.bootstrap != script || s.closed || s.send == nil {
+		return errors.New("远端接入已经结束")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := s.checkAutoAttach(r); err != nil {
+		return err
+	}
+	r.autoCtx = ctx
+	r.auto = []byte("\x00WT-ATTACH:" + s.token + ":" + r.token)
+	s.send(r.auto)
+	return nil
+}
+
+// checkAutoAttach 由持有 s.mu 的调用方调用。
+func (s *Session) checkAutoAttach(r *remoteSession) error {
+	if len(r.input) != 0 || r.changed || s.dirty || s.keys != r.keys || s.keys > s.submitted {
+		return errors.New("确认期间终端状态发生变化，请重新确认远端提示符")
+	}
+	group, err := s.foregroundGroup()
+	if err != nil || group != r.group {
+		return errors.New("远端连接状态发生变化，请重新接入")
+	}
+	return nil
 }
 
 func (s *Session) foregroundGroup() (int, error) {
@@ -104,13 +174,23 @@ func (s *Session) foregroundGroup() (int, error) {
 	return int(group), nil
 }
 
-func (s *Session) cancelAttach(r *remoteSession) {
+func (s *Session) cancelAttach(r *remoteSession) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.remote == r {
+		if r.injecting {
+			r.resetWrite = true
+			_ = s.pty.SetWriteDeadline(time.Now())
+		}
+		if r.injected {
+			s.flushAttachEcho(r)
+			s.state(false)
+			s.reportBlockedInput()
+		}
 		s.retired = append(s.retired, r)
 		s.remote = nil
 	}
+	return r.injected
 }
 
 func remoteQuote(text string) string {
@@ -283,6 +363,7 @@ func (s *Session) controlRemote(remote *remoteSession, mark string) bool {
 	switch {
 	case mark == "I":
 		if remote.attaching {
+			s.flushAttachEcho(remote)
 			if err := remote.attachInputError(s); err != nil {
 				s.failAttach(remote, err)
 				return true
@@ -292,6 +373,7 @@ func (s *Session) controlRemote(remote *remoteSession, mark string) bool {
 		return true
 	case mark == "F":
 		if remote.attaching {
+			s.flushAttachEcho(remote)
 			s.failAttach(remote, errors.New("目标不是可交互的 Bash，或 promptvars 已关闭，或 PS1、PROMPT_COMMAND 不可修改"))
 		} else {
 			remote.prompt = ""
@@ -322,6 +404,10 @@ func (s *Session) controlRemote(remote *remoteSession, mark string) bool {
 			remote.attaching = false
 			remote.ready = true
 			remote.input = nil
+			if remote.injected {
+				s.state(false)
+				s.reportBlockedInput()
+			}
 			remote.attachDone <- nil
 			return true
 		}
@@ -379,6 +465,11 @@ func (s *Session) controlRemote(remote *remoteSession, mark string) bool {
 // failAttach 由持有 s.mu 的调用方调用。
 func (s *Session) failAttach(remote *remoteSession, err error) {
 	remote.attaching = false
+	if remote.injected {
+		s.flushAttachEcho(remote)
+		s.state(false)
+		s.reportBlockedInput()
+	}
 	s.retired = append(s.retired, remote)
 	s.remote = nil
 	remote.attachDone <- err

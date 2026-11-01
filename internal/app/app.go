@@ -17,6 +17,7 @@ import (
 type controller struct {
 	*shell.Session
 	*session
+	confirmation *attachConfirmation
 }
 
 // Run 启动应用并等待退出。终端或应用启动失败时返回原因。
@@ -59,14 +60,17 @@ func Run() error {
 		}
 		sh.SetSender(term.Send)
 
+		confirmation := &attachConfirmation{}
 		win := mygo.NewWindow(mygo.WindowOptions{
 			Title:  "Who's Typing",
 			Width:  760,
 			Height: 480,
 			Content: ui.View(func(c *ui.Context) {
 				terminal.View(c, term).Fill().AutoFocus()
+				confirmation.view(c)
 			}),
 		})
+		confirmation.update = win.Update
 		win.OnClosed(func() {
 			s.close()
 			mygo.App.Quit()
@@ -100,7 +104,7 @@ func Run() error {
 				}
 			}
 		}()
-		go server.Serve(controller{Session: sh, session: s})
+		go server.Serve(controller{Session: sh, session: s, confirmation: confirmation})
 		started = true
 		s.setReady(term, win)
 	})

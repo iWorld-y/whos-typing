@@ -49,6 +49,11 @@ type Attacher interface {
 	Attach(context.Context, string, func(string) error) error
 }
 
+// AutoAttacher 等待用户在窗口确认后自动接入远端 Shell。
+type AutoAttacher interface {
+	AttachAuto(context.Context, string, func() error) error
+}
+
 // SessionReader 返回窗口当前显示及滚动历史中的文本。
 type SessionReader interface {
 	ReadSession() (string, error)
@@ -194,6 +199,22 @@ func handle(conn *net.UnixConn, executor Executor) {
 		_ = json.NewEncoder(conn).Encode(reply)
 		return
 	}
+	if req.Action == "attach.auto" {
+		attacher, ok := executor.(AutoAttacher)
+		if !ok {
+			_ = json.NewEncoder(conn).Encode(response{Error: "终端不支持自动接入"})
+			return
+		}
+		err := attacher.AttachAuto(ctx, req.Shell, func() error {
+			return json.NewEncoder(conn).Encode(response{Phase: "confirmation"})
+		})
+		reply := response{Phase: "attached"}
+		if err != nil {
+			reply.Error = err.Error()
+		}
+		_ = json.NewEncoder(conn).Encode(reply)
+		return
+	}
 	if req.Action != "" || req.Timeout < 0 {
 		_ = json.NewEncoder(conn).Encode(response{Error: "命令请求格式错误"})
 		return
@@ -311,12 +332,25 @@ func AttachRemote(shellName string, out io.Writer) error {
 }
 
 func attachRemote(path, shellName string, out io.Writer) error {
+	return attachRemoteAction(path, shellName, "attach", out)
+}
+
+// AttachRemoteAuto 等待用户在窗口确认，并由窗口自动输入接入命令。
+func AttachRemoteAuto(shellName string, out io.Writer) error {
+	return attachRemoteAuto(socketPath(directory()), shellName, out)
+}
+
+func attachRemoteAuto(path, shellName string, out io.Writer) error {
+	return attachRemoteAction(path, shellName, "attach.auto", out)
+}
+
+func attachRemoteAction(path, shellName, action string, out io.Writer) error {
 	conn, err := net.DialTimeout("unix", path, 2*time.Second)
 	if err != nil {
 		return fmt.Errorf("无法连接 Who's Typing 窗口: %w", err)
 	}
 	defer conn.Close()
-	if err := json.NewEncoder(conn).Encode(request{Action: "attach", Shell: shellName}); err != nil {
+	if err := json.NewEncoder(conn).Encode(request{Action: action, Shell: shellName}); err != nil {
 		return fmt.Errorf("发送接入请求失败: %w", err)
 	}
 	r := bufio.NewReader(conn)
@@ -330,11 +364,24 @@ func attachRemote(path, shellName string, out io.Writer) error {
 			return errors.New("终端响应格式错误")
 		}
 		if reply.Error != "" {
+			if action == "attach.auto" && reply.Error == "命令请求格式错误" {
+				return errors.New("当前 Who's Typing 窗口不支持自动接入，请使用相同版本的窗口和 CLI")
+			}
 			return errors.New(reply.Error)
 		}
 		switch reply.Phase {
 		case "instructions":
+			if action != "attach" {
+				return errors.New("终端不支持自动接入")
+			}
 			if _, err := fmt.Fprintf(out, "请在 GUI 的远端 Bash 空提示符粘贴并执行以下一行：\n%s\n等待接入，按 Ctrl+C 可取消。\n", reply.Script); err != nil {
+				return err
+			}
+		case "confirmation":
+			if action != "attach.auto" {
+				return errors.New("终端响应格式错误")
+			}
+			if _, err := fmt.Fprintln(out, "请在 Who's Typing 窗口确认当前为目标服务器的远端 Bash 空提示符。\n等待确认和接入，按 Ctrl+C 可取消。"); err != nil {
 				return err
 			}
 		case "attached":

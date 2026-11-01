@@ -25,6 +25,18 @@ type attachExecutor struct {
 	attach func(context.Context, string, func(string) error) error
 }
 
+type autoAttachExecutor struct {
+	attach func(context.Context, string, func() error) error
+}
+
+func (a autoAttachExecutor) Execute(context.Context, string) Result {
+	return Result{Err: errors.New("不应执行命令")}
+}
+
+func (a autoAttachExecutor) AttachAuto(ctx context.Context, shell string, notify func() error) error {
+	return a.attach(ctx, shell, notify)
+}
+
 func (a attachExecutor) Execute(context.Context, string) Result {
 	return Result{Err: errors.New("不应执行命令")}
 }
@@ -149,6 +161,138 @@ func TestAttachClientReceivesInstructionsAndCompletion(t *testing.T) {
 	}
 	if !strings.Contains(output.String(), "single-line-bootstrap") || !strings.Contains(output.String(), "已接入") {
 		t.Fatalf("接入输出不完整: %q", output.String())
+	}
+}
+
+func TestAutomaticAttachClientWaitsForConfirmation(t *testing.T) {
+	dir := testDir(t)
+	server, err := listen(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prompted := make(chan struct{})
+	confirmed := make(chan struct{})
+	go server.Serve(autoAttachExecutor{attach: func(ctx context.Context, shell string, notify func() error) error {
+		if shell != "bash" {
+			return errors.New("不支持的 Shell")
+		}
+		if err := notify(); err != nil {
+			return err
+		}
+		close(prompted)
+		select {
+		case <-confirmed:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}})
+	defer server.Close()
+	var output bytes.Buffer
+	done := make(chan error, 1)
+	go func() { done <- attachRemoteAuto(socketPath(dir), "bash", &output) }()
+	select {
+	case <-prompted:
+	case <-time.After(time.Second):
+		t.Fatal("未收到确认请求")
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("用户确认前接入已结束: %v", err)
+	default:
+	}
+	close(confirmed)
+	if err := <-done; err != nil {
+		t.Fatalf("确认后接入失败: %v", err)
+	}
+	if !strings.Contains(output.String(), "窗口") || !strings.Contains(output.String(), "已接入") {
+		t.Fatalf("自动接入输出不完整: %q", output.String())
+	}
+}
+
+func TestAutomaticAttachClientRejectsManualInstructions(t *testing.T) {
+	dir := testDir(t)
+	listener, err := net.ListenUnix("unix", &net.UnixAddr{Name: socketPath(dir), Net: "unix"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	go func() {
+		conn, err := listener.AcceptUnix()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		_, _ = bufio.NewReader(conn).ReadBytes('\n')
+		_ = json.NewEncoder(conn).Encode(response{Phase: "instructions", Script: "unexpected-bootstrap"})
+	}()
+	var output bytes.Buffer
+	if err := attachRemoteAuto(socketPath(dir), "bash", &output); err == nil {
+		t.Fatal("自动接入不应接受手动接入指令")
+	}
+	if strings.Contains(output.String(), "unexpected-bootstrap") {
+		t.Fatal("自动接入不应输出手动接入命令")
+	}
+}
+
+func TestAutomaticAttachClientReportsOlderWindow(t *testing.T) {
+	dir := testDir(t)
+	listener, err := net.ListenUnix("unix", &net.UnixAddr{Name: socketPath(dir), Net: "unix"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	go func() {
+		conn, err := listener.AcceptUnix()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		_, _ = bufio.NewReader(conn).ReadBytes('\n')
+		_ = json.NewEncoder(conn).Encode(response{Error: "命令请求格式错误"})
+	}()
+	err = attachRemoteAuto(socketPath(dir), "bash", io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "不支持自动接入") {
+		t.Fatalf("旧窗口应提示版本不支持: %v", err)
+	}
+}
+
+func TestAutomaticAttachDisconnectCancelsConfirmation(t *testing.T) {
+	dir := testDir(t)
+	server, err := listen(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancelled := make(chan struct{})
+	go server.Serve(autoAttachExecutor{attach: func(ctx context.Context, _ string, notify func() error) error {
+		if err := notify(); err != nil {
+			return err
+		}
+		<-ctx.Done()
+		close(cancelled)
+		return ctx.Err()
+	}})
+	defer server.Close()
+	conn, err := net.Dial("unix", socketPath(dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.NewEncoder(conn).Encode(request{Action: "attach.auto", Shell: "bash"}); err != nil {
+		t.Fatal(err)
+	}
+	line, err := bufio.NewReader(conn).ReadBytes('\n')
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reply response
+	if err := json.Unmarshal(line, &reply); err != nil || reply.Phase != "confirmation" {
+		t.Fatalf("确认请求错误: %+v %v", reply, err)
+	}
+	_ = conn.Close()
+	select {
+	case <-cancelled:
+	case <-time.After(time.Second):
+		t.Fatal("CLI 断开后未取消窗口确认")
 	}
 }
 
