@@ -2,12 +2,53 @@ package app
 
 import (
 	"errors"
+	"fmt"
+	"math"
 	"testing"
 	"time"
 
+	"github.com/egoist/mygo/plugins/terminal"
 	"github.com/egoist/mygo/ui"
 	"whos-typing/internal/shell"
 )
+
+func TestControlViewCapsuleFloatsAtTopCenter(t *testing.T) {
+	view := &controlView{owner: shell.ControlHuman}
+	view.control = &fakeViewControl{view: view}
+	var text string
+	tester := ui.NewTester(func(c *ui.Context) {
+		view.view(c, func() { ui.TextInput(c, &text).Label("测试终端").Fill() })
+	}, 320, 180)
+	tester.SetPreferences(ui.Preferences{ReduceMotion: true})
+	humanTerminal, ok := tester.Find("测试终端")
+	if !ok {
+		t.Fatal("未找到终端")
+	}
+	view.owner = shell.ControlAgent
+	tester.Frame()
+	for _, size := range []struct{ width, height int }{{320, 180}, {760, 480}} {
+		tester.SetSize(size.width, size.height)
+		terminal, ok := tester.Find("测试终端")
+		if !ok || terminal.Y != 0 || terminal.H != float32(size.height) {
+			t.Fatalf("悬浮胶囊不应占用终端空间: 窗口=%+v 终端=%+v", size, terminal)
+		}
+		status, statusOK := tester.Find("agent 正在控制")
+		button, buttonOK := tester.Find("接管")
+		capsule, capsuleOK := tester.Find("终端控制")
+		center := capsule.X + capsule.W/2
+		if !statusOK || !buttonOK || !capsuleOK || status.Y >= 40 || button.Y >= 40 || math.Abs(float64(center-float32(size.width)/2)) > 2 {
+			t.Fatalf("状态与按钮应在顶部居中: 窗口=%+v 胶囊=%+v 状态=%+v 按钮=%+v", size, capsule, status, button)
+		}
+	}
+	if humanTerminal.H != 180 {
+		t.Fatalf("人类控制时终端应填充窗口: %+v", humanTerminal)
+	}
+	view.owner = shell.ControlHuman
+	tester.Frame()
+	if tester.HasText("agent 正在控制") || tester.HasText("接管") {
+		t.Fatal("普通人类控制时应隐藏胶囊")
+	}
+}
 
 type fakeViewControl struct {
 	view      *controlView
@@ -58,6 +99,136 @@ func TestControlViewTakeOverAndReturn(t *testing.T) {
 	tester.Advance(500 * time.Millisecond)
 	if view.owner != shell.ControlAgent || !tester.HasText("agent 正在控制") || tester.HasText("交还 Agent") {
 		t.Fatalf("交还后控制栏错误: %v", tester.Texts())
+	}
+}
+
+func TestControlViewCapsuleErrorFitsNarrowWindow(t *testing.T) {
+	for _, width := range []int{180, 240, 320} {
+		t.Run(fmt.Sprint(width), func(t *testing.T) {
+			view := &controlView{owner: shell.ControlHuman}
+			controller := &fakeViewControl{view: view}
+			view.control = controller
+			var text string
+			tester := ui.NewTester(func(c *ui.Context) {
+				view.view(c, func() { ui.TextInput(c, &text).Label("测试终端").Fill().AutoFocus() })
+			}, width, 180)
+			tester.SetPreferences(ui.Preferences{ReduceMotion: true})
+			view.owner = shell.ControlAgent
+			tester.Frame()
+			tester.SetSize(320, 180)
+			fullAgentStatus, ok := tester.Find("agent 正在控制")
+			if !ok {
+				t.Fatal("未找到 Agent 控制提示")
+			}
+			tester.SetSize(width, 180)
+			agentStatus, ok := tester.Find("agent 正在控制")
+			if !ok || agentStatus.W+0.5 < fullAgentStatus.W {
+				t.Fatalf("窄窗口不应截断 Agent 控制提示: 完整=%+v 当前=%+v", fullAgentStatus, agentStatus)
+			}
+			if err := tester.Click("接管"); err != nil {
+				t.Fatal(err)
+			}
+			tester.SetSize(320, 180)
+			fullHumanStatus, ok := tester.Find("人类正在控制")
+			if !ok {
+				t.Fatal("未找到人类控制提示")
+			}
+			tester.SetSize(width, 180)
+			humanStatus, ok := tester.Find("人类正在控制")
+			if !ok || humanStatus.W+0.5 < fullHumanStatus.W {
+				t.Fatalf("窄窗口不应截断人类控制提示: 完整=%+v 当前=%+v", fullHumanStatus, humanStatus)
+			}
+			controller.returnErr = errors.New("终端尚未就绪，请完成当前输入或等待前台程序")
+			if err := tester.Click("交还 Agent"); err != nil {
+				t.Fatal(err)
+			}
+			capsule, capsuleOK := tester.Find("终端控制")
+			button, buttonOK := tester.Find("交还 Agent")
+			message, messageOK := tester.Find(controller.returnErr.Error())
+			if !capsuleOK || !buttonOK || !messageOK || capsule.X < 0 || capsule.X+capsule.W > float32(width) || capsule.Y < 0 || capsule.Y+capsule.H > 180 ||
+				button.X < capsule.X || button.X+button.W > capsule.X+capsule.W || button.Y < capsule.Y || button.Y+button.H > capsule.Y+capsule.H ||
+				message.X < capsule.X || message.X+message.W > capsule.X+capsule.W || message.Y < capsule.Y || message.Y+message.H > capsule.Y+capsule.H {
+				t.Fatalf("窄窗口下交还按钮和错误提示应在胶囊内: 胶囊=%+v 按钮=%+v 提示=%+v", capsule, button, message)
+			}
+			if !tester.Focused("测试终端") {
+				t.Fatal("交还失败后终端不应失去焦点")
+			}
+			controller.returnErr = nil
+			if err := tester.Click("交还 Agent"); err != nil {
+				t.Fatal(err)
+			}
+			if view.owner != shell.ControlAgent {
+				t.Fatal("显示错误后仍应能交还控制权")
+			}
+		})
+	}
+}
+
+func TestControlViewCapsuleBlursBackdrop(t *testing.T) {
+	view := &controlView{owner: shell.ControlHuman}
+	view.control = &fakeViewControl{view: view}
+	stripeX := float32(-100)
+	tester := ui.NewTester(func(c *ui.Context) {
+		view.view(c, func() {
+			ui.Box(c).Fill().Draw(func(p *ui.Painter, r ui.Rect) {
+				p.Fill(r, ui.Hex("#303030"), 0)
+				p.Fill(ui.Rect{X: stripeX, Y: r.Y, W: 2, H: r.H}, ui.Hex("#ffffff"), 0)
+			})
+		})
+	}, 320, 180)
+	tester.SetDark(false)
+	tester.SetPreferences(ui.Preferences{ReduceMotion: true})
+	view.owner = shell.ControlHumanTakeover
+	tester.Frame()
+	capsule, ok := tester.Find("终端控制")
+	if !ok {
+		t.Fatal("未找到控制胶囊")
+	}
+	x, y := int(capsule.X+capsule.W/2), int(capsule.Y+5)
+	before := tester.Image().RGBAAt(x, y)
+	uncovered := tester.Image().RGBAAt(x, 100)
+	stripeX = float32(x + 2)
+	tester.Frame()
+	after := tester.Image().RGBAAt(x, y)
+	if int(after.R) <= int(before.R)+4 {
+		t.Fatalf("胶囊应模糊邻近的终端内容: 原像素=%v，邻近亮条出现后=%v", before, after)
+	}
+	if got := tester.Image().RGBAAt(x, 100); got != uncovered {
+		t.Fatalf("胶囊外的相同位置不应受邻近亮条影响: 之前=%v，之后=%v", uncovered, got)
+	}
+}
+
+func TestControlViewCapsuleButtonFeedback(t *testing.T) {
+	for _, dark := range []bool{false, true} {
+		t.Run(fmt.Sprintf("dark_%v", dark), func(t *testing.T) {
+			view := &controlView{owner: shell.ControlHuman}
+			view.control = &fakeViewControl{view: view}
+			tester := ui.NewTester(func(c *ui.Context) {
+				view.view(c, func() { ui.Box(c).Fill().Background(ui.Hex("#778899")) })
+			}, 320, 180)
+			tester.SetDark(dark)
+			tester.SetPreferences(ui.Preferences{ReduceMotion: true})
+			view.owner = shell.ControlAgent
+			tester.Frame()
+			button, ok := tester.Find("接管")
+			if !ok {
+				t.Fatal("未找到接管按钮")
+			}
+			x, y := button.X+button.W/2, button.Y+button.H/2
+			sampleX, sampleY := int(button.X+5), int(y)
+			normal := tester.Image().RGBAAt(sampleX, sampleY)
+			tester.Move(x, y)
+			hovered := tester.Image().RGBAAt(sampleX, sampleY)
+			tester.Press(x, y)
+			pressed := tester.Image().RGBAAt(sampleX, sampleY)
+			if normal == hovered || hovered == pressed {
+				t.Fatalf("按钮应区分普通、悬停与按下状态: %v %v %v", normal, hovered, pressed)
+			}
+			tester.Release(x, y)
+			if view.owner != shell.ControlHumanTakeover {
+				t.Fatal("按钮点击后未接管终端")
+			}
+		})
 	}
 }
 
@@ -124,6 +295,43 @@ func TestControlViewKeepsTerminalFocusAndPointerInput(t *testing.T) {
 	tester.Type("hello")
 	if text != "hello" {
 		t.Fatalf("接管后终端未收到输入: %q", text)
+	}
+}
+
+func TestControlViewTakeOverKeepsNativeTerminalFocus(t *testing.T) {
+	requireTerminal(t)
+	conn := &passiveConn{closed: make(chan struct{})}
+	term, err := terminal.New(terminal.Options{Conn: conn})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = term.Close() })
+	view := &controlView{owner: shell.ControlHuman}
+	view.control = &fakeViewControl{view: view}
+	tester := ui.NewTester(func(c *ui.Context) {
+		view.view(c, func() { terminal.View(c, term).Fill().AutoFocus() })
+	}, 320, 180)
+	tester.SetPreferences(ui.Preferences{ReduceMotion: true})
+	tester.SetFocused(true)
+	view.owner = shell.ControlAgent
+	tester.Frame()
+	if !tester.Focused("Terminal") {
+		t.Fatal("接管前原生终端未获得焦点")
+	}
+	if err := tester.Click("接管"); err != nil {
+		t.Fatal(err)
+	}
+	if !tester.Focused("Terminal") {
+		t.Fatal("接管按钮使原生终端失去焦点")
+	}
+	before := conn.writes.Load()
+	tester.Type("from-human")
+	deadline := time.Now().Add(time.Second)
+	for conn.writes.Load() == before && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if conn.writes.Load() == before {
+		t.Fatal("接管后输入未到达原生终端连接")
 	}
 }
 

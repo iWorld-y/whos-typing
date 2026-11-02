@@ -40,7 +40,7 @@ Who's Typing 这个名字来自「谁在我的终端里打字」的想法。窗�
 ## 环境要求
 
 - macOS 为首个验收平台，需要桌面环境和 Go 1.27.3 或更高版本。
-- 原生界面使用上游 [MyGo](https://github.com/egoist/mygo) `v0.7.3`。终端插件依赖 libghostty-vt，首次运行时由 MyGo 获取并校验原生库，需要网络连接。
+- 原生界面使用上游 [MyGo](https://github.com/egoist/mygo) `v0.7.4`。终端插件依赖 libghostty-vt，首次运行时由 MyGo 获取并校验原生库，需要网络连接。
 
 ## 快速开始
 

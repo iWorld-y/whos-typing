@@ -4,6 +4,7 @@ package app
 import (
 	"time"
 
+	"github.com/egoist/mygo/plugins/glass"
 	"github.com/egoist/mygo/ui"
 	"github.com/egoist/mygo/ui/shader"
 	"whos-typing/internal/shell"
@@ -79,30 +80,47 @@ func (v *controlView) view(c *ui.Context, content func()) {
 }
 
 func (v *controlView) controlBar(c *ui.Context) {
-	ui.Row(c).FillWidth().Padding(8, 12).Background(ui.Hex("#1b2636")).Children(func() {
-		ui.Row(c).FillWidth().MinHeight(44).Padding(8, 14).Gap(12).
-			AlignItems(ui.Center).Radius(12).Background(ui.Hex("#354458")).Children(func() {
+	width, _ := c.Size()
+	textColor, agentColor, errorColor := ui.Hex("#081a2c"), ui.Hex("#0b2137"), ui.Hex("#241408")
+	buttonColor := ui.RGBA(255, 255, 255, 0.10)
+	if c.Theme().Dark {
+		textColor, agentColor, errorColor = ui.Hex("#f6faff"), ui.Hex("#f6faff"), ui.Hex("#fff8f0")
+		buttonColor = ui.RGBA(0, 0, 0, 0.10)
+	}
+	ui.Column(c.Key("control-capsule")).Role(ui.RoleGroup).Label("终端控制").Attach(ui.AnchorTop, ui.AnchorTop).Top(10).
+		MaxWidth(min(420, max(0, width-24))).Padding(6, 12).Gap(4).Radius(24).
+		Material(glass.Glass{Tint: ui.RGBA(44, 77, 112, 0.30)}).
+		Shadow(0, 3, 8, 0, ui.RGBA(16, 27, 48, 0.15)).Children(func() {
+		ui.Row(c).Gap(12).AlignItems(ui.Center).Wrap().Children(func() {
+			key, label := "take-over", "接管"
 			if v.owner == shell.ControlAgent {
-				ui.Text(c, "agent 正在控制").FontSize(14).Bold().TextColor(ui.Hex("#67acff"))
+				ui.Text(c, "agent 正在控制").FontSize(14).Bold().TextColor(agentColor).SingleLine().Shrink(0).Translate(0, -0.5)
 			} else {
-				ui.Text(c, "人类正在控制").FontSize(14).TextColor(ui.Hex("#d7e2f0"))
+				key, label = "return-control", "交还 Agent"
+				ui.Text(c, "人类正在控制").FontSize(14).TextColor(textColor).SingleLine().Shrink(0).Translate(0, -0.5)
 			}
-			if v.message != "" {
-				ui.Text(c, v.message).FontSize(12).TextColor(ui.Hex("#ffd6b0"))
+			button := ui.Button(c.Key(key), "").Label(label).KeepFocus().Shrink(0)
+			if button.Pressed() {
+				buttonColor.A = min(255, buttonColor.A+26)
+			} else if button.Hovered() {
+				buttonColor.A = min(255, buttonColor.A+13)
 			}
-			ui.Spacer(c).Grow(1)
-			if v.owner == shell.ControlAgent {
-				if ui.Button(c.Key("take-over"), "接管").KeepFocus().Clicked() {
+			button.Background(buttonColor).BorderWidth(0).Radius(10).TextColor(textColor).Children(func() {
+				ui.Text(c, label).SingleLine().Translate(0, -1)
+			})
+			if button.Clicked() {
+				if v.owner == shell.ControlAgent {
 					v.message = ""
 					v.control.TakeOver()
-				}
-			} else if ui.Button(c.Key("return-control"), "交还 Agent").KeepFocus().Clicked() {
-				if err := v.control.ReturnControl(); err != nil {
+				} else if err := v.control.ReturnControl(); err != nil {
 					v.message = err.Error()
 				} else {
 					v.message = ""
 				}
 			}
 		})
+		if v.message != "" {
+			ui.Text(c, v.message).FontSize(12).TextColor(errorColor)
+		}
 	})
 }

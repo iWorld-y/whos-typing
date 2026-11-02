@@ -2,7 +2,7 @@
 
 ## 构建与运行
 
-所有命令从仓库根目录执行。项目使用 Go 1.27.3、上游 `github.com/egoist/mygo v0.7.3` 和 MyGo 原生终端插件；首个验收平台为 macOS。
+所有命令从仓库根目录执行。项目使用 Go 1.27.3、上游 `github.com/egoist/mygo v0.7.4` 和 MyGo 原生终端插件；首个验收平台为 macOS。
 
 ```sh
 GOWORK=off go list -m -json github.com/egoist/mygo
