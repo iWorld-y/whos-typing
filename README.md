@@ -50,9 +50,9 @@ Who's Typing 这个名字来自「谁在我的终端里打字」的想法。窗�
 make run
 ```
 
-该命令先构建程序，再打开终端窗口。也可以单独执行 `make build`，产物位于 `output/whos-typing` 和 `output/whos-typing-cli`。
+该命令先构建程序，再在后台启动终端窗口。应用日志追加到 `output/whos-typing.log`。也可以单独执行 `make build`，产物位于 `output/whos-typing` 和 `output/whos-typing-cli`。
 
-保持窗口运行，在另一个终端中执行：
+保持窗口运行，在启动命令所在的终端或其他终端中执行：
 
 ```sh
 ./output/whos-typing-cli 'pwd'
