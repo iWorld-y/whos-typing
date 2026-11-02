@@ -80,9 +80,13 @@ Agent 命令结束后，连续 60 秒没有新命令时，终端自动将控制�
 
 GUI 通过 SSH 等方式进入远端交互式 Bash 后，可以手动接入当前会话。接入前，确认 GUI 显示的是目标服务器的 Bash 提示符，且没有尚未提交的输入。不要在堡垒机菜单、密码提示或其他交互程序中执行接入命令。
 
-1. 在另一个终端运行 `./output/whos-typing-cli attach --remote --shell bash`，保持该命令运行。
-2. 将 CLI 输出的完整接入命令粘贴到 GUI 的远端 Bash 提示符，按回车执行。
+1. 在另一个终端运行 `./output/whos-typing-cli attach --remote --shell bash --auto`，保持该命令运行。
+2. 在 Who's Typing 窗口确认当前终端已登录目标服务器，并停在远端 Bash 的空提示符，然后点击「确认接入」。窗口会自动输入一次性接入命令。
 3. 等待 CLI 显示「远端 Bash 已接入」。随后可在另一个终端运行 `./output/whos-typing-cli 'pwd'` 等命令，命令在已接入的远端 Shell 中执行。
+
+自动接入等待确认期间，如果终端收到新输出或人工输入，接入会停止，需重新确认当前提示符。取消或连接中断后，若接入命令可能已发送，应先检查远端 Shell 状态。
+
+也可以运行 `./output/whos-typing-cli attach --remote --shell bash` 使用手动方式。CLI 会输出一次性接入命令，由用户将完整命令粘贴到远端 Bash 空提示符并执行。
 
 每个远端会话需要接入一次。接入命令会在当前远端 Shell 中设置提示符钩子，不修改 Shell 配置文件。当前远端接入仅支持 Bash；需要交互输入的程序仍应在 GUI 中操作。
 
