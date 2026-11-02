@@ -1,0 +1,11 @@
+{
+  "name": "Who's Typing",
+  "slug": "whos-typing",
+  "identifier": "dev.whostyping.preview",
+  "version": "0.1.0",
+  "main": "./cmd/whos-typing",
+  "macos": {
+    "minimumSystemVersion": "13.0",
+    "signingIdentity": "-"
+  }
+}

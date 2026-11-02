@@ -10,6 +10,9 @@ import (
 )
 
 func main() {
+	if handleLocalOption(os.Args[1:], os.Stdout) {
+		return
+	}
 	if len(os.Args) == 3 && os.Args[1] == "session" && os.Args[2] == "status" {
 		if err := control.SessionStatus(os.Stdout); err != nil {
 			fmt.Fprintln(os.Stderr, err)
@@ -60,7 +63,7 @@ func main() {
 		os.Exit(code)
 	}
 	if len(os.Args) != 2 {
-		fmt.Fprintln(os.Stderr, "用法: whos-typing-cli [--timeout 时间] '命令'\n      whos-typing-cli attach --remote --shell bash [--auto]\n      whos-typing-cli session {read|status|release}")
+		fmt.Fprintln(os.Stderr, usage)
 		os.Exit(2)
 	}
 	code, err := control.Run(os.Args[1], os.Stdout)

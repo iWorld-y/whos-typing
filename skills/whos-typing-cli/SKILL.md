@@ -7,7 +7,7 @@ description: 使用 Who's Typing CLI 读取用户共享的终端会话，或在�
 
 Who's Typing 的 CLI 连接当前用户正在运行的 GUI，在同一个 Shell 会话中执行命令，保留工作目录和环境变量。仅在用户要求使用该会话时操作；会话文本可能包含敏感信息，只读取完成任务需要的内容。
 
-使用用户提供的 CLI 路径，或使用 `PATH` 中的 `whos-typing-cli`。在项目根目录构建时，路径为 `./output/whos-typing-cli`（`make build` 生成）。以下示例用 `whos-typing-cli` 表示实际可执行文件。GUI 必须保持运行；无法连接时告知用户，不要自行关闭或重启其窗口。
+使用用户提供的 CLI 路径，或使用 `PATH` 中的 `whos-typing-cli`。在项目根目录构建时，路径为 `./output/whos-typing-cli`（`make build` 生成）。以下示例用 `whos-typing-cli` 表示实际可执行文件。`--help` 和 `--version` 无需连接 GUI；执行会话操作时，GUI 必须保持运行。无法连接时告知用户，不要自行关闭或重启其窗口。
 
 ## 目标和安全边界
 

@@ -2,6 +2,7 @@
 package app
 
 import (
+	"context"
 	"errors"
 	"fmt"
 
@@ -28,7 +29,9 @@ func Run() error {
 	}
 	started := false
 	stopUpdates := make(chan struct{})
+	ctx, cancel := context.WithCancel(context.Background())
 	defer func() {
+		cancel()
 		if !started {
 			go server.Serve(nil)
 		}
@@ -107,6 +110,7 @@ func Run() error {
 		go server.Serve(controller{Session: sh, session: s, confirmation: confirmation})
 		started = true
 		s.setReady(term, win)
+		go installBundledCLI(ctx, win)
 	})
 
 	err = mygo.App.Run()

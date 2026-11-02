@@ -13,6 +13,8 @@ whos-typing 使用 Go 和 MyGo 原生 UI，在一个窗口中运行本地用户 
 
 在仓库根目录执行 `make build`，构建产物为 `output/whos-typing` 和 `output/whos-typing-cli`。
 
+在 macOS 上执行 `make package`，为当前 Go 架构生成 `output/whos-typing-0.1.0-<架构>.dmg`。镜像包含 GUI、CLI、Skill 和终端原生库。打包使用项目依赖的 MyGo CLI；首次获取依赖或原生库时需要网络连接。应用使用临时签名，尚未经过 Apple 公证。
+
 ## 启动
 
 在仓库根目录执行：

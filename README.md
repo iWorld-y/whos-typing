@@ -27,6 +27,7 @@ Who's Typing 这个名字来自「谁在我的终端里打字」的想法。窗�
 我们希望 Agent 像调用普通命令行工具一样使用 Who's Typing。CLI 提供执行命令、读取会话和接入远端 Bash 的能力；Skill 用于说明调用方法、操作顺序和结果处理，让外部 Agent 沿用自己的命令执行工具来操作终端。
 
 项目提供 [CLI Skill](skills/whos-typing-cli/SKILL.md)，说明如何读取和操作共享会话。
+Skill 目录中的 `WHOS_TYPING_SKILL` 用于标识来源，分发时需一并保留。
 
 ## 当前版本
 
@@ -40,7 +41,7 @@ Who's Typing 这个名字来自「谁在我的终端里打字」的想法。窗�
 ## 环境要求
 
 - macOS 为首个验收平台，需要桌面环境和 Go 1.27.3 或更高版本。
-- 原生界面使用上游 [MyGo](https://github.com/egoist/mygo) `v0.7.4`。终端插件依赖 libghostty-vt，首次运行时由 MyGo 获取并校验原生库，需要网络连接。
+- 原生界面使用上游 [MyGo](https://github.com/egoist/mygo) `v0.7.4`。终端插件依赖 libghostty-vt。从源码运行时，MyGo 首次获取并校验原生库，需要网络连接；打包后的应用包含该库。
 
 ## 快速开始
 
@@ -51,6 +52,10 @@ make run
 ```
 
 该命令先构建程序，再在后台启动终端窗口。应用日志追加到 `output/whos-typing.log`。也可以单独执行 `make build`，产物位于 `output/whos-typing` 和 `output/whos-typing-cli`。
+
+运行 `./output/whos-typing-cli --help` 查看用法，或运行 `./output/whos-typing-cli --version` 查看版本。这两个命令不需要启动 GUI。
+
+macOS 应用包启动后会尝试将 CLI 链接到 `/usr/local/bin/whos-typing-cli`，并将随包的 Skill 链接到 `~/.agents/skills/whos-typing-cli`。需要管理员权限时，应用会先询问；已有同名命令或其他来源的 Skill 时不会覆盖。已有本项目标记的 Skill 目录会保留原样。请先将应用从 DMG 拖入应用程序文件夹，再启动应用。
 
 保持窗口运行，在启动命令所在的终端或其他终端中执行：
 
@@ -99,6 +104,8 @@ make run
 CLI 超时或断开不代表命令已停止，结果可能未知。先在 GUI 中确认状态，必要时按 Ctrl+C；不要直接重试。CLI 执行期间，GUI 暂停普通键盘和粘贴输入，因此需要交互输入的程序应直接在 GUI 中操作。
 
 ## 开发
+
+在 macOS 上执行 `make package`，可以在 `output/` 生成当前 Go 架构的 DMG。打包要求和签名说明见 [开发文档](docs/development.md)。
 
 ```sh
 GOWORK=off go test ./...
