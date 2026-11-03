@@ -44,3 +44,49 @@ func TestLocalOptions(t *testing.T) {
 		})
 	}
 }
+
+func TestParseWorkspaceArguments(t *testing.T) {
+	for _, tc := range []struct {
+		args                                []string
+		action, session, command, direction string
+		focus, json                         bool
+		invalid                             bool
+	}{
+		{args: []string{"--session", "abc", "--timeout", "30s", "printf '%s' --x"}, action: "exec", session: "abc", command: "printf '%s' --x"},
+		{args: []string{"--session", "abc", "--", "--help"}, action: "exec", session: "abc", command: "--help"},
+		{args: []string{"session", "list", "--json"}, action: "session.list", json: true},
+		{args: []string{"session", "current", "--json"}, action: "session.current", json: true},
+		{args: []string{"tab", "new", "--json"}, action: "tab.new", json: true},
+		{args: []string{"--session", "abc", "session", "split", "--direction", "down", "--focus", "--json"}, action: "session.split", session: "abc", direction: "down", focus: true, json: true},
+		{args: []string{"--session", "abc", "attach", "--remote", "--shell", "bash", "--auto"}, action: "attach", session: "abc"},
+		{args: []string{"session", "split", "--direction", "left"}, invalid: true},
+		{args: []string{"--timeout", "0s", "pwd"}, invalid: true},
+		{args: []string{"--session", "a", "--session", "b", "pwd"}, invalid: true},
+		{args: []string{"--session", "a", "session", "list"}, invalid: true},
+		{args: []string{"--", "one", "two"}, invalid: true},
+		{args: []string{"--unknown"}, invalid: true},
+	} {
+		o, err := parseArgs(tc.args)
+		if tc.invalid {
+			if err == nil {
+				t.Errorf("%v 未拒绝", tc.args)
+			}
+			continue
+		}
+		if err != nil || o.action != tc.action || o.session != tc.session || o.command != tc.command || o.direction != tc.direction || o.focus != tc.focus || o.json != tc.json {
+			t.Errorf("%v: %+v %v", tc.args, o, err)
+		}
+	}
+}
+
+func TestParseRenameTab(t *testing.T) {
+	o, err := parseArgs([]string{"tab", "rename", "--tab", "tab-id", "工作 会话"})
+	if err != nil || o.action != "tab.rename" || o.tab != "tab-id" || o.title != "工作 会话" {
+		t.Fatalf("解析错误: %+v %v", o, err)
+	}
+	for _, args := range [][]string{{"tab", "rename", "--tab", "tab-id", " "}, {"tab", "rename", "--tab", "", "name"}, {"tab", "rename", "--tab", "id"}, {"--session", "a", "tab", "rename", "--tab", "id", "name"}} {
+		if _, err := parseArgs(args); err == nil {
+			t.Fatalf("未拒绝参数 %v", args)
+		}
+	}
+}

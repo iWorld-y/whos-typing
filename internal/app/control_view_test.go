@@ -379,3 +379,34 @@ func TestControlViewAttachConfirmationAboveEffect(t *testing.T) {
 		t.Fatal("关闭确认框后应回到 Agent 控制栏")
 	}
 }
+
+func TestTwoNarrowPanesKeepTakeoverButtonsUsable(t *testing.T) {
+	left := &controlView{owner: shell.ControlAgent}
+	right := &controlView{owner: shell.ControlAgent}
+	left.control = &fakeViewControl{view: left}
+	right.control = &fakeViewControl{view: right}
+	percent := float32(50)
+	tester := ui.NewTester(func(c *ui.Context) {
+		ui.SplitPercent(c, &percent,
+			func() { left.view(c, func() { ui.Text(c, "左侧终端") }) },
+			func() { right.view(c, func() { ui.Text(c, "右侧终端") }) }).Fill()
+	}, 380, 220)
+	tester.SetPreferences(ui.Preferences{ReduceMotion: true})
+	tester.Frame()
+	button, ok := tester.Find("接管")
+	if !ok || button.X < 0 || button.X+button.W > 190 {
+		t.Fatalf("左侧按钮越界: %+v", button)
+	}
+	tester.ClickAt(button.X+button.W/2, button.Y+button.H/2)
+	if left.owner != shell.ControlHumanTakeover || right.owner != shell.ControlAgent {
+		t.Fatal("左侧接管影响了其他窗格")
+	}
+	button, ok = tester.Find("接管")
+	if !ok || button.X < 190 || button.X+button.W > 380 {
+		t.Fatalf("右侧按钮越界: %+v", button)
+	}
+	tester.ClickAt(button.X+button.W/2, button.Y+button.H/2)
+	if right.owner != shell.ControlHumanTakeover {
+		t.Fatal("右侧按钮不可点击")
+	}
+}

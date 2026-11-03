@@ -32,7 +32,7 @@ func (v *controlView) view(c *ui.Context, content func()) {
 	if v.started.IsZero() {
 		v.started = c.Now()
 	}
-	root := ui.Column(c).Fill().Background(ui.Hex("#111827"))
+	root := ui.Column(c).Fill().Clip().Background(ui.Hex("#111827"))
 	root.Children(func() {
 		area := ui.Box(c.Key("terminal-area")).FillWidth().Grow(1)
 		var target float32
@@ -74,13 +74,16 @@ func (v *controlView) view(c *ui.Context, content func()) {
 		})
 		area.Children(content)
 		if v.owner != shell.ControlHuman {
-			v.controlBar(c)
+			width := area.Bounds().W
+			if width <= 0 {
+				width, _ = c.Size()
+			}
+			v.controlBar(c, width)
 		}
 	})
 }
 
-func (v *controlView) controlBar(c *ui.Context) {
-	width, _ := c.Size()
+func (v *controlView) controlBar(c *ui.Context, width float32) {
 	textColor, agentColor, errorColor := ui.Hex("#081a2c"), ui.Hex("#0b2137"), ui.Hex("#241408")
 	buttonColor := ui.RGBA(255, 255, 255, 0.10)
 	if c.Theme().Dark {
