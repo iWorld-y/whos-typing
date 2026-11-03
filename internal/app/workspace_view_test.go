@@ -16,7 +16,7 @@ import (
 
 func TestWorkspaceViewSplitFocusAndResize(t *testing.T) {
 	requireTerminal(t)
-	w := newWorkspace(func(id string, onExit func(int)) (*pane, error) {
+	w := newWorkspace(testIDs(t), func(id string, onExit func(int)) (*pane, error) {
 		conn := &passiveConn{closed: make(chan struct{})}
 		term, err := terminal.New(terminal.Options{Conn: conn, OnExit: onExit})
 		if err != nil {
@@ -74,6 +74,12 @@ func TestWorkspaceViewSplitFocusAndResize(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := w.RenameTab(a.TabID, "Alpha"); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.RenameTab(e.TabID, "Echo"); err != nil {
+		t.Fatal(err)
+	}
 	tester.Frame()
 	current, _ = w.CurrentSession()
 	if current.SessionID != b.SessionID {
@@ -83,7 +89,7 @@ func TestWorkspaceViewSplitFocusAndResize(t *testing.T) {
 	bTerm := w.panes[b.SessionID].terminal
 	w.mu.Unlock()
 	colsBeforeHide, rowsBeforeHide := bTerm.Size()
-	if err := tester.Click("02"); err != nil {
+	if err := tester.Click("Echo"); err != nil {
 		t.Fatal(err)
 	}
 	tester.Frame()
@@ -95,7 +101,7 @@ func TestWorkspaceViewSplitFocusAndResize(t *testing.T) {
 	if current.SessionID != e.SessionID {
 		t.Fatalf("切换标签失败: %+v", current)
 	}
-	if err := tester.Click("01"); err != nil {
+	if err := tester.Click("Alpha"); err != nil {
 		t.Fatal(err)
 	}
 	tester.Frame()
@@ -103,7 +109,7 @@ func TestWorkspaceViewSplitFocusAndResize(t *testing.T) {
 	if current.SessionID != b.SessionID {
 		t.Fatalf("未恢复标签焦点: %+v", current)
 	}
-	if err := tester.RightClick("01"); err != nil {
+	if err := tester.RightClick("Alpha"); err != nil {
 		t.Fatal(err)
 	}
 	if err := tester.ChooseMenuItem("关闭当前窗格"); err != nil {
@@ -121,7 +127,7 @@ func TestWorkspaceViewSplitFocusAndResize(t *testing.T) {
 	if err != nil || current.SessionID != c.SessionID || !tester.Focused("终端 "+c.SessionID) {
 		t.Fatalf("关闭窗格后焦点错误: %+v %v", current, err)
 	}
-	if err := tester.RightClick("01"); err != nil {
+	if err := tester.RightClick("Alpha"); err != nil {
 		t.Fatal(err)
 	}
 	if err := tester.ChooseMenuItem("关闭标签页"); err != nil {
@@ -143,7 +149,7 @@ func TestWorkspaceViewSplitFocusAndResize(t *testing.T) {
 
 func TestWorkspaceManyLongTabTitlesRemainAccessible(t *testing.T) {
 	requireTerminal(t)
-	w := newWorkspace(func(id string, onExit func(int)) (*pane, error) {
+	w := newWorkspace(testIDs(t), func(id string, onExit func(int)) (*pane, error) {
 		conn := &passiveConn{closed: make(chan struct{})}
 		term, err := terminal.New(terminal.Options{Conn: conn, OnExit: onExit})
 		if err != nil {
@@ -167,33 +173,38 @@ func TestWorkspaceManyLongTabTitlesRemainAccessible(t *testing.T) {
 	}
 	view := &workspaceView{workspace: w, update: func(fn func()) { fn() }}
 	tester := ui.NewTester(view.view, 760, 480)
+	tester.SetTitleBar(ui.TitleBar{Height: 32, Left: 80})
 	tester.SetFocused(true)
 	tester.Frame()
-	if view.tabsScroll.MaxX <= 0 {
-		t.Fatalf("长标题未进入滚动区域: %+v", view.tabsScroll)
+	var first ui.Rect
+	for i := 0; i < 7; i++ {
+		label := fmt.Sprintf("标签%d%s", i, strings.Repeat("很长", 15))
+		rect, ok := tester.Find(label)
+		if !ok {
+			t.Fatalf("找不到标签 %q", label)
+		}
+		if rect.X < 80 || rect.X+rect.W > 760 {
+			t.Fatalf("标签超出可用宽度: %+v", rect)
+		}
+		if i == 0 {
+			first = rect
+		} else if delta := rect.W - first.W; delta < -1 || delta > 1 {
+			t.Fatalf("标签不等宽: %+v %+v", first, rect)
+		}
 	}
 	for _, name := range []string{"向左滚动标签", "向右滚动标签"} {
-		r, ok := tester.Find(name)
-		if !ok || r.X < 0 || r.X+r.W > 760 {
-			t.Fatalf("操作入口不可见: %s %+v", name, r)
+		if _, ok := tester.Find(name); ok {
+			t.Fatalf("仍显示按钮 %s", name)
 		}
 	}
-	for range 10 {
-		if err := tester.Click("向右滚动标签"); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if view.tabsScroll.X <= 0 {
-		t.Fatal("标签无法向右滚动")
-	}
-	label := string([]rune("标签6" + strings.Repeat("很长", 15))[:20]) + "…"
+	label := fmt.Sprintf("标签%d%s", 6, strings.Repeat("很长", 15))
 	if err := tester.Click(label); err != nil {
 		t.Fatal(err)
 	}
 	tester.Frame()
 	current, err := w.CurrentSession()
 	if err != nil || current.SessionID != created[6].SessionID {
-		t.Fatalf("长标签无法切换: %+v %v", current, err)
+		t.Fatalf("无法切换标签: %+v %v", current, err)
 	}
 }
 
@@ -213,7 +224,7 @@ func (c *inputCapture) contents() string { c.mu.Lock(); defer c.mu.Unlock(); ret
 func TestWorkspaceKeyboardAndPasteStayInFocusedPane(t *testing.T) {
 	requireTerminal(t)
 	connections := make(map[string]*inputCapture)
-	w := newWorkspace(func(id string, onExit func(int)) (*pane, error) {
+	w := newWorkspace(testIDs(t), func(id string, onExit func(int)) (*pane, error) {
 		conn := &inputCapture{passiveConn: passiveConn{closed: make(chan struct{})}}
 		connections[id] = conn
 		term, err := terminal.New(terminal.Options{Conn: conn, OnExit: onExit})
@@ -255,7 +266,7 @@ func TestWorkspaceKeyboardAndPasteStayInFocusedPane(t *testing.T) {
 func TestWorkspaceInputMethodCompositionFollowsFocus(t *testing.T) {
 	requireTerminal(t)
 	connections := make(map[string]*inputCapture)
-	w := newWorkspace(func(id string, onExit func(int)) (*pane, error) {
+	w := newWorkspace(testIDs(t), func(id string, onExit func(int)) (*pane, error) {
 		conn := &inputCapture{passiveConn: passiveConn{closed: make(chan struct{})}}
 		connections[id] = conn
 		term, err := terminal.New(terminal.Options{Conn: conn, OnExit: onExit})
@@ -307,7 +318,7 @@ func TestWorkspaceInputMethodCompositionFollowsFocus(t *testing.T) {
 
 func TestRenamedTabIgnoresShellTitle(t *testing.T) {
 	requireTerminal(t)
-	w := newWorkspace(func(id string, onExit func(int)) (*pane, error) {
+	w := newWorkspace(testIDs(t), func(id string, onExit func(int)) (*pane, error) {
 		conn := &passiveConn{closed: make(chan struct{})}
 		term, err := terminal.New(terminal.Options{Conn: conn, OnExit: onExit})
 		if err != nil {
@@ -340,7 +351,7 @@ func TestWorkspaceShortcutsCreateWithoutSendingInput(t *testing.T) {
 	var mu sync.Mutex
 	var shortcutKeys atomic.Int32
 	connections := make(map[string]*inputCapture)
-	w := newWorkspace(func(id string, onExit func(int)) (*pane, error) {
+	w := newWorkspace(testIDs(t), func(id string, onExit func(int)) (*pane, error) {
 		conn := &inputCapture{passiveConn: passiveConn{closed: make(chan struct{})}}
 		mu.Lock()
 		connections[id] = conn
@@ -391,7 +402,7 @@ func TestWorkspaceShortcutsCreateWithoutSendingInput(t *testing.T) {
 	tester.Key(ui.Cmd, ui.KeyT)
 	waitCount(2)
 	current, _ := w.CurrentSession()
-	if current.TabTitle != "02" {
+	if current.TabID == first.TabID {
 		t.Fatalf("Cmd+T 未聚焦新标签: %+v", current)
 	}
 	tester.Key(ui.Cmd, ui.KeyD)
@@ -444,7 +455,7 @@ func TestWorkspaceShortcutsCreateWithoutSendingInput(t *testing.T) {
 
 func TestRightClickClosesClickedBackgroundTab(t *testing.T) {
 	requireTerminal(t)
-	w := newWorkspace(func(id string, onExit func(int)) (*pane, error) {
+	w := newWorkspace(testIDs(t), func(id string, onExit func(int)) (*pane, error) {
 		conn := &passiveConn{closed: make(chan struct{})}
 		term, err := terminal.New(terminal.Options{Conn: conn, OnExit: onExit})
 		if err != nil {
@@ -458,11 +469,14 @@ func TestRightClickClosesClickedBackgroundTab(t *testing.T) {
 	a, _ := w.NewTab(true)
 	b, _ := w.NewTab(false)
 	c, _ := w.SplitSession(b.SessionID, "right", false)
+	if err := w.RenameTab(b.TabID, "Background"); err != nil {
+		t.Fatal(err)
+	}
 	view := &workspaceView{workspace: w, update: func(fn func()) { fn() }}
 	tester := ui.NewTester(view.view, 760, 480)
 	tester.SetFocused(true)
 	tester.Frame()
-	if err := tester.RightClick("02"); err != nil {
+	if err := tester.RightClick("Background"); err != nil {
 		t.Fatal(err)
 	}
 	if err := tester.ChooseMenuItem("关闭当前窗格"); err != nil {
@@ -486,7 +500,7 @@ func TestRightClickClosesClickedBackgroundTab(t *testing.T) {
 		t.Fatalf("右键后台标签改变了当前会话: %+v", current)
 	}
 	tester.Frame()
-	if err := tester.RightClick("02"); err != nil {
+	if err := tester.RightClick("Background"); err != nil {
 		t.Fatal(err)
 	}
 	if err := tester.ChooseMenuItem("关闭标签页"); err != nil {
@@ -507,7 +521,7 @@ func TestRightClickClosesClickedBackgroundTab(t *testing.T) {
 
 func TestWorkspaceConcurrentSplitAndDividerDrag(t *testing.T) {
 	requireTerminal(t)
-	w := newWorkspace(func(id string, onExit func(int)) (*pane, error) {
+	w := newWorkspace(testIDs(t), func(id string, onExit func(int)) (*pane, error) {
 		conn := &passiveConn{closed: make(chan struct{})}
 		term, err := terminal.New(terminal.Options{Conn: conn, OnExit: onExit})
 		if err != nil {
@@ -544,6 +558,62 @@ func TestWorkspaceConcurrentSplitAndDividerDrag(t *testing.T) {
 		tester.Frame()
 	}
 	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestTitleBarSingleNarrowAndFullscreen(t *testing.T) {
+	w, _ := searchWorkspace(t)
+	a, _ := w.NewTab(true)
+	if err := w.RenameTab(a.TabID, "单个标题"); err != nil {
+		t.Fatal(err)
+	}
+	view := &workspaceView{workspace: w, update: func(fn func()) { fn() }}
+	tester := ui.NewTester(view.view, 220, 350)
+	tester.SetTitleBar(ui.TitleBar{Height: 32, Left: 70})
+	tester.SetFocused(true)
+	tester.Frame()
+	single, ok := tester.Find("单个标题")
+	if !ok || single.X < 70 || single.Y >= 32 {
+		t.Fatalf("单标题不在按钮右侧: %+v %v", single, ok)
+	}
+	term, ok := tester.Find("终端 " + a.SessionID)
+	if !ok || term.Y != 32 {
+		t.Fatalf("单标题下方存在额外标签行: %+v", term)
+	}
+	b, _ := w.NewTab(false)
+	if err := w.RenameTab(b.TabID, "很长很长的另一个标题用于窄窗口"); err != nil {
+		t.Fatal(err)
+	}
+	tester.Frame()
+	ra, oka := tester.Find("单个标题")
+	rb, okb := tester.Find("很长很长的另一个标题用于窄窗口")
+	if !oka || !okb || ra.X < 70 || rb.X+rb.W > 220 || ra.W-rb.W > 1 || rb.W-ra.W > 1 {
+		t.Fatalf("窄窗口标签布局错误: %+v %+v", ra, rb)
+	}
+	if err := tester.Click("很长很长的另一个标题用于窄窗口"); err != nil {
+		t.Fatal(err)
+	}
+	current, _ := w.CurrentSession()
+	if current.SessionID != b.SessionID {
+		t.Fatalf("窄标签不能点击: %+v", current)
+	}
+	tester.SetTitleBar(ui.TitleBar{})
+	tester.Frame()
+	ra, oka = tester.Find("单个标题")
+	rb, okb = tester.Find("很长很长的另一个标题用于窄窗口")
+	if !oka || !okb || ra.X >= 70 || ra.W-rb.W > 1 || rb.W-ra.W > 1 {
+		t.Fatalf("全屏占位未调整: %+v %+v", ra, rb)
+	}
+	w.closeTab(b.TabID)
+	tester.Frame()
+	if _, ok := tester.Find("单个标题"); !ok {
+		t.Fatal("关闭后未恢复单标题")
+	}
+	if err := tester.RightClick("单个标题"); err != nil {
+		t.Fatal(err)
+	}
+	if err := tester.ChooseMenuItem("关闭当前窗格"); err != nil {
 		t.Fatal(err)
 	}
 }

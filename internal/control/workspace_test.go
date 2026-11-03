@@ -380,3 +380,69 @@ func TestWorkspaceRenameTabProtocol(t *testing.T) {
 		t.Fatal("无效请求更改了名称")
 	}
 }
+
+func TestWorkspaceOpaqueLongAndShortIDs(t *testing.T) {
+	const oldID = "1234567890abcdef1234567890abcdef"
+	const shortID = "session_02"
+	var mu sync.Mutex
+	var calls []string
+	makeTarget := func(id string) Executor {
+		return executorFunc(func(_ context.Context, command string) Result {
+			mu.Lock()
+			calls = append(calls, id+":"+command)
+			mu.Unlock()
+			return Result{}
+		})
+	}
+	w := &workspaceStub{sessions: map[string]Executor{oldID: makeTarget(oldID), shortID: makeTarget(shortID)}, current: oldID}
+	path := readTestServer(t, w)
+	list, err := listWorkspace(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundOld, foundNew := false, false
+	for _, item := range list.Sessions {
+		foundOld = foundOld || item.SessionID == oldID
+		foundNew = foundNew || item.SessionID == shortID
+	}
+	if !foundOld || !foundNew {
+		t.Fatalf("列表未保留完整标识: %+v", list)
+	}
+	if _, err := runSession(path, oldID, "new-client", 0, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runSession(path, shortID, "new-format", 0, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	for _, bad := range []string{"", "session_0", "session_2", "01", "tab_02", "0000002a", oldID[:8], "2"} {
+		if _, err := runSession(path, bad, "must-not-run", 0, io.Discard); err == nil {
+			t.Fatalf("接受不完整目标 %q", bad)
+		}
+	}
+	// 模拟旧版多会话 CLI 的 v2 握手与请求，不预处理新服务的短 ID。
+	conn, err := net.Dial("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	enc, dec := json.NewEncoder(conn), json.NewDecoder(conn)
+	if err := enc.Encode(map[string]any{"action": "hello"}); err != nil {
+		t.Fatal(err)
+	}
+	var hello response
+	if err := dec.Decode(&hello); err != nil || hello.Version != 2 || !hello.MultiSession {
+		t.Fatalf("握手错误: %+v %v", hello, err)
+	}
+	if err := enc.Encode(map[string]any{"session_id": shortID, "command": "old-client"}); err != nil {
+		t.Fatal(err)
+	}
+	var reply response
+	if err := dec.Decode(&reply); err != nil || reply.Error != "" {
+		t.Fatalf("旧客户端请求失败: %+v %v", reply, err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if strings.Join(calls, ",") != oldID+":new-client,"+shortID+":new-format,"+shortID+":old-client" {
+		t.Fatalf("目标未原样传递: %v", calls)
+	}
+}

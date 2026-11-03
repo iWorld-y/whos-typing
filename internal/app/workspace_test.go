@@ -3,24 +3,26 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 
 	"whos-typing/internal/control"
+	"whos-typing/internal/shell"
 )
 
 type workspaceExecutor struct{ id string }
 
 func (e workspaceExecutor) Execute(context.Context, string) control.Result { return control.Result{} }
 
-func testWorkspace() *workspace {
-	return newWorkspace(func(id string, _ func(int)) (*pane, error) { return &pane{target: workspaceExecutor{id: id}}, nil })
+func testWorkspace(t *testing.T) *workspace {
+	return newWorkspace(testIDs(t), func(id string, _ func(int)) (*pane, error) { return &pane{target: workspaceExecutor{id: id}}, nil })
 }
 
 func TestWorkspaceNestedSplitAndCollapse(t *testing.T) {
-	w := testWorkspace()
+	w := testWorkspace(t)
 	a, err := w.NewTab(true)
 	if err != nil {
 		t.Fatal(err)
@@ -61,7 +63,11 @@ func TestWorkspaceNestedSplitAndCollapse(t *testing.T) {
 	if e.SessionID == c.SessionID || e.SessionID == d.SessionID {
 		t.Fatal("新会话复用了 ID")
 	}
-	other := testWorkspace()
+	other := testWorkspace(t)
+	other.ids, err = newIDAllocator(w.ids.dir)
+	if err != nil {
+		t.Fatal(err)
+	}
 	f, err := other.NewTab(true)
 	if err != nil {
 		t.Fatal(err)
@@ -72,7 +78,7 @@ func TestWorkspaceNestedSplitAndCollapse(t *testing.T) {
 }
 
 func TestWorkspaceFocusTabsAndResolution(t *testing.T) {
-	w := testWorkspace()
+	w := testWorkspace(t)
 	a, _ := w.NewTab(true)
 	b, _ := w.SplitSession(a.SessionID, "right", false)
 	current, _ := w.CurrentSession()
@@ -132,7 +138,7 @@ func TestWorkspaceCreateFailureAndTargetCloses(t *testing.T) {
 	var count atomic.Int32
 	started, proceed := make(chan struct{}), make(chan struct{})
 	var closed atomic.Int32
-	w := newWorkspace(func(id string, _ func(int)) (*pane, error) {
+	w := newWorkspace(testIDs(t), func(id string, _ func(int)) (*pane, error) {
 		n := count.Add(1)
 		if n == 3 {
 			close(started)
@@ -178,7 +184,7 @@ func TestWorkspaceLateExitAndShutdownDuringCreate(t *testing.T) {
 	var mu sync.Mutex
 	started, proceed := make(chan struct{}), make(chan struct{})
 	var closed atomic.Int32
-	w := newWorkspace(func(id string, exit func(int)) (*pane, error) {
+	w := newWorkspace(testIDs(t), func(id string, exit func(int)) (*pane, error) {
 		mu.Lock()
 		callbacks = append(callbacks, exit)
 		n := len(callbacks)
@@ -210,7 +216,7 @@ func TestWorkspaceLateExitAndShutdownDuringCreate(t *testing.T) {
 }
 
 func TestWorkspaceInitialFailurePreservesReasonAndIgnoresLateExit(t *testing.T) {
-	w := testWorkspace()
+	w := testWorkspace(t)
 	created, err := w.NewTab(true)
 	if err != nil {
 		t.Fatal(err)
@@ -233,50 +239,62 @@ func TestWorkspaceInitialFailurePreservesReasonAndIgnoresLateExit(t *testing.T) 
 	}
 }
 
-func TestWorkspaceTabNumberingAndRename(t *testing.T) {
-	w := testWorkspace()
-	a, _ := w.NewTab(true)
-	b, _ := w.NewTab(false)
+type titleTestExecutor struct{ value shell.TitleContext }
+
+func (e *titleTestExecutor) Execute(context.Context, string) control.Result { return control.Result{} }
+func (e *titleTestExecutor) TitleContext() shell.TitleContext               { return e.value }
+
+func TestWorkspaceDynamicTitlesAndRename(t *testing.T) {
+	targets := map[string]*titleTestExecutor{}
+	w := newWorkspace(testIDs(t), func(id string, _ func(int)) (*pane, error) {
+		target := &titleTestExecutor{value: shell.TitleContext{User: "用户", Host: "host", Directory: "/one"}}
+		targets[id] = target
+		return &pane{target: target}, nil
+	})
+	a, err := w.NewTab(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := w.SplitSession(a.SessionID, "right", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	targets[b.SessionID].value.Directory = "/two\nline"
 	list, _ := w.ListSessions()
-	if list.Sessions[0].TabTitle != "01" || list.Sessions[1].TabTitle != "02" {
-		t.Fatalf("默认编号错误: %+v", list)
+	if list.Sessions[0].TabTitle != "用户@host:/one" || list.Sessions[1].TabTitle != "用户@host:/one" {
+		t.Fatalf("后台窗格改变标题: %+v", list)
 	}
-	w.closeTab(b.TabID)
-	c, err := w.NewTab(true)
-	if err != nil {
+	if err := w.FocusSession(b.SessionID); err != nil {
 		t.Fatal(err)
 	}
-	d, err := w.SplitSession(a.SessionID, "right", false)
-	if err != nil {
-		t.Fatal(err)
+	current, _ := w.CurrentSession()
+	if current.TabTitle != `用户@host:/two\nline` {
+		t.Fatalf("当前窗格标题错误: %+v", current)
+	}
+	targets[b.SessionID].value.Unknown = true
+	current, _ = w.CurrentSession()
+	if current.TabTitle != `用户@host:/two\nline（状态未知）` {
+		t.Fatalf("未知状态错误: %+v", current)
 	}
 	if err := w.RenameTab(a.TabID, "构建"); err != nil {
 		t.Fatal(err)
 	}
+	targets[b.SessionID].value.Directory = "/three"
 	for _, bad := range []struct{ id, title string }{{a.TabID, ""}, {a.TabID, " \t\n"}, {"missing", "其他"}} {
 		if err := w.RenameTab(bad.id, bad.title); err == nil {
-			t.Fatalf("无效重命名未拒绝: %+v", bad)
+			t.Fatalf("接受无效重命名: %+v", bad)
 		}
 	}
 	list, _ = w.ListSessions()
-	if len(list.Sessions) != 3 || list.Sessions[0].TabTitle != "构建" || list.Sessions[1].TabTitle != "构建" || list.Sessions[1].SessionID != d.SessionID || list.Sessions[2].TabTitle != "03" {
-		t.Fatalf("重命名、分屏或关闭后编号错误: %+v", list)
-	}
-	current, _ := w.CurrentSession()
-	if current.SessionID != c.SessionID || current.TabTitle != "03" {
-		t.Fatalf("后台重命名改变焦点: %+v", current)
-	}
-	other := testWorkspace()
-	_, _ = other.NewTab(true)
-	first, _ := other.CurrentSession()
-	if first.TabTitle != "01" {
-		t.Fatalf("新工作区默认编号错误: %+v", first)
+	current, _ = w.CurrentSession()
+	if list.Sessions[0].TabTitle != "构建" || list.Sessions[1].TabTitle != "构建" || current.TabTitle != "构建" {
+		t.Fatalf("人工标题未保留: %+v %+v", list, current)
 	}
 }
 
-func TestWorkspaceTabNumberNotConsumedBySplitOrFailedCreate(t *testing.T) {
+func TestWorkspaceFailedCreateDoesNotChangeTabOrder(t *testing.T) {
 	var calls atomic.Int32
-	w := newWorkspace(func(id string, _ func(int)) (*pane, error) {
+	w := newWorkspace(testIDs(t), func(id string, _ func(int)) (*pane, error) {
 		if calls.Add(1) == 3 {
 			return nil, errors.New("注入创建失败")
 		}
@@ -287,6 +305,9 @@ func TestWorkspaceTabNumberNotConsumedBySplitOrFailedCreate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if a.SessionID != "session_01" || a.TabID != "tab_01" || b.SessionID != "session_02" || b.TabID != "tab_01" {
+		t.Fatalf("分屏标识错误: %+v %+v", a, b)
+	}
 	if _, err := w.NewTab(false); err == nil {
 		t.Fatal("应报告创建失败")
 	}
@@ -294,24 +315,63 @@ func TestWorkspaceTabNumberNotConsumedBySplitOrFailedCreate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if c.SessionID != "session_04" || c.TabID != "tab_03" {
+		t.Fatalf("创建失败后的高水位错误: %+v", c)
+	}
 	list, _ := w.ListSessions()
-	if len(list.Sessions) != 3 || list.Sessions[0].TabTitle != "01" || list.Sessions[1].TabTitle != "01" || list.Sessions[1].SessionID != b.SessionID || list.Sessions[2].SessionID != c.SessionID || list.Sessions[2].TabTitle != "02" {
-		t.Fatalf("失败或分屏消耗了编号: %+v", list)
+	if len(list.Sessions) != 3 || list.Sessions[0].TabID != a.TabID || list.Sessions[1].SessionID != b.SessionID || list.Sessions[2].SessionID != c.SessionID || list.Sessions[2].TabID == a.TabID {
+		t.Fatalf("失败或分屏改变顺序: %+v", list)
 	}
 }
 
-func TestWorkspaceTabNumberAboveNinetyNine(t *testing.T) {
-	w := testWorkspace()
-	for i := 1; i <= 100; i++ {
-		item, err := w.NewTab(i == 100)
-		if err != nil {
-			t.Fatal(err)
+func TestWorkspaceShortIDsStableAfterCloseAndFailure(t *testing.T) {
+	w := testWorkspace(t)
+	a, err := w.NewTab(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := w.NewTab(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := w.NewTab(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, item := range []control.CreatedSession{a, b, c} {
+		if item.SessionID != fmt.Sprintf("session_%02d", i+1) || item.TabID != fmt.Sprintf("tab_%02d", i+1) {
+			t.Fatalf("标识错误: %+v", item)
 		}
-		if i == 100 {
-			current, err := w.CurrentSession()
-			if err != nil || current.TabID != item.TabID || current.TabTitle != "100" {
-				t.Fatalf("三位编号错误: %+v %v", current, err)
-			}
+	}
+	w.closeTab(b.TabID)
+	d, err := w.NewTab(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.TabID == b.TabID || d.SessionID == b.SessionID {
+		t.Fatal("关闭后的标识被复用")
+	}
+	list, err := w.ListSessions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list.Sessions) != 3 || list.Sessions[0].SessionID != a.SessionID || list.Sessions[1].SessionID != c.SessionID || list.Sessions[2].SessionID != d.SessionID {
+		t.Fatalf("关闭后顺序错误: %+v", list)
+	}
+	if id, _, err := w.ResolveSession("session_01"); err != nil || id != a.SessionID {
+		t.Fatalf("完整标识无法解析: %q %v", id, err)
+	}
+	for _, id := range []string{b.SessionID, "session_0", "session_1", "01", "tab_01", "00000001", "1", "not-found"} {
+		if _, _, err := w.ResolveSession(id); err == nil {
+			t.Fatalf("接受无效目标 %q", id)
 		}
+	}
+	w.ids.write = func(string, idHighWater) error { return errors.New("注入写入失败") }
+	if _, err := w.NewTab(false); err == nil {
+		t.Fatal("未报告分配失败")
+	}
+	after, err := w.ListSessions()
+	if err != nil || len(after.Sessions) != 3 {
+		t.Fatalf("失败改变布局: %+v %v", after, err)
 	}
 }

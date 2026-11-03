@@ -19,6 +19,7 @@ const usage = `用法: whos-typing-cli [--session ID] [--timeout 时间] [--] '�
       whos-typing-cli --version
 
 多个会话时，执行、读取、控制、接入和分屏必须指定 --session。
+新窗口的完整 ID 如 session_01、tab_01，请原样使用；旧窗口的 ID 格式可能不同。
 要操作“这个会话”，先查询 session current --json，再固定返回的 ID。`
 
 // handleLocalOption 处理无需连接终端的本地选项。

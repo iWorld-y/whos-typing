@@ -46,6 +46,7 @@ type remoteSession struct {
 	echo       []byte
 	echoDone   bool
 	recovery   bool
+	title      *TitleContext
 }
 
 // Attach 等待用户在远端 Bash 中手动执行接入命令；它不会写入终端。
@@ -274,7 +275,7 @@ func remoteBootstrap(token string, oldTokens ...string) string {
 		`case "$a" in *r*) builtin printf '{{MARK}}F\037'; return "$s" ;; esac;`,
 		`p="${PS1-}"; p=${p//'\[$({{EMIT}})\]'/};`,
 		`if ! shopt -q promptvars; then PS1="$p"; builtin printf '{{MARK}}F\037'; return "$s"; fi;`,
-		`{{GEN}}=$(( ${{{GEN}}:-0} + 1 )); builtin printf '{{MARK}}C:%s\037' "${{{GEN}}}";`,
+		`{{META}} {{GEN}}=$(( ${{{GEN}}:-0} + 1 )); builtin printf '{{MARK}}C:%s\037' "${{{GEN}}}";`,
 		`PS1="${p}"'\[$({{EMIT}})\]'; return "$s"; };`,
 		`{{BEGIN}}(){ {{PREVIOUS}}=$?; builtin printf '{{MARK}}S\037'; return "${{{PREVIOUS}}}"; };`,
 		`{{RESTORE}}(){ return "${{{PREVIOUS}}}"; };`,
@@ -286,7 +287,7 @@ func remoteBootstrap(token string, oldTokens ...string) string {
 		`unset {{ATTR}}; builtin printf '{{MARK}}I\037'; fi; fi`,
 	}, " ")
 	script = strings.NewReplacer(
-		"{{CLEANUP}}", remoteCleanup(oldTokens),
+		"{{CLEANUP}}", remoteCleanup(oldTokens), "{{META}}", titlePrompt(mark, false),
 		"{{MARK}}", mark, "{{PROMPT}}", prompt, "{{EMIT}}", emit,
 		"{{GEN}}", generation, "{{BEGIN}}", begin, "{{RESTORE}}", restore,
 		"{{END}}", end, "{{PREVIOUS}}", previous, "{{DATA}}", data,
@@ -445,6 +446,11 @@ func (s *Session) controlRemote(remote *remoteSession, mark string) bool {
 		return true
 	}
 	switch {
+	case strings.HasPrefix(mark, "M:"):
+		if value, ok := decodeTitleContext(mark); ok {
+			remote.title = &value
+		}
+		return true
 	case mark == "I":
 		if remote.attaching {
 			s.flushAttachEcho(remote)
@@ -462,6 +468,7 @@ func (s *Session) controlRemote(remote *remoteSession, mark string) bool {
 		} else {
 			remote.prompt = ""
 			remote.ready = false
+			s.markTitleUnknown()
 		}
 		return true
 	case strings.HasPrefix(mark, "C:"):
@@ -486,6 +493,10 @@ func (s *Session) controlRemote(remote *remoteSession, mark string) bool {
 				return true
 			}
 			remote.attaching = false
+			if remote.title != nil {
+				s.setTitleContext(*remote.title)
+				remote.title = nil
+			}
 			remote.ready = true
 			remote.input = nil
 			if remote.injected {
@@ -495,6 +506,10 @@ func (s *Session) controlRemote(remote *remoteSession, mark string) bool {
 			}
 			remote.attachDone <- nil
 			return true
+		}
+		if remote.title != nil {
+			s.setTitleContext(*remote.title)
+			remote.title = nil
 		}
 		if r := s.active; r != nil && r.remote {
 			s.active = nil

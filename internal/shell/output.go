@@ -50,6 +50,23 @@ func (s *Session) Read(p []byte) (int, error) {
 func (s *Session) parse(flush bool) {
 	for len(s.readBuf) != 0 {
 		markers := s.markers()
+		if s.discardTitle {
+			end := bytes.IndexByte(s.readBuf, 0x1f)
+			pos := nextMarker(s.readBuf, markers)
+			if pos >= 0 && (end < 0 || pos < end) {
+				s.readBuf = s.readBuf[pos:]
+				s.discardTitle = false
+				continue
+			}
+			if end >= 0 {
+				s.readBuf = s.readBuf[end+1:]
+				s.discardTitle = false
+				continue
+			}
+			keep := markerSuffix(s.readBuf, markers)
+			s.readBuf = s.readBuf[len(s.readBuf)-keep:]
+			return
+		}
 		pos := -1
 		var selected markerRef
 		for _, marker := range markers {
@@ -78,8 +95,27 @@ func (s *Session) parse(flush bool) {
 			s.emit(s.readBuf[:pos])
 			s.readBuf = s.readBuf[pos:]
 		}
-		end := bytes.IndexByte(s.readBuf[len(selected.prefix):], 0x1f)
+		payload := s.readBuf[len(selected.prefix):]
+		end := bytes.IndexByte(payload, 0x1f)
+		if bytes.HasPrefix(payload, []byte("M:")) {
+			if pos := nextMarker(payload, markers); pos >= 0 && (end < 0 || pos < end) {
+				s.readBuf = payload[pos:]
+				continue
+			}
+		}
 		if end < 0 {
+			if bytes.HasPrefix(payload, []byte("M:")) {
+				if !flush && len(payload) <= maxTitleMarker {
+					return
+				}
+				if flush {
+					s.readBuf = nil
+					return
+				}
+				s.discardTitle = true
+				s.readBuf = payload
+				continue
+			}
 			if !flush && len(s.readBuf) < len(selected.prefix)+64 {
 				return
 			}
@@ -100,6 +136,30 @@ func (s *Session) parse(flush bool) {
 		}
 		s.readBuf = s.readBuf[end+1:]
 	}
+}
+
+// nextMarker 找到有效令牌的下一条标记，供畸形元信息恢复同步。
+func nextMarker(data []byte, markers []markerRef) int {
+	pos := -1
+	for _, marker := range markers {
+		if i := bytes.Index(data, marker.prefix); i >= 0 && (pos < 0 || i < pos) {
+			pos = i
+		}
+	}
+	return pos
+}
+
+func markerSuffix(data []byte, markers []markerRef) int {
+	keep := 0
+	for _, marker := range markers {
+		for n := min(len(data), len(marker.prefix)-1); n > keep; n-- {
+			if bytes.Equal(data[len(data)-n:], marker.prefix[:n]) {
+				keep = n
+				break
+			}
+		}
+	}
+	return keep
 }
 
 type markerRef struct {
@@ -136,6 +196,9 @@ func (s *Session) emit(p []byte) {
 	}
 	if remote := s.remote; remote != nil && remote.ready && s.active == nil {
 		remote.observeOutput(p)
+		if !remote.ready {
+			s.markTitleUnknown()
+		}
 	}
 	if s.active != nil && !s.active.started {
 		s.parsed = append(s.parsed, terminalControl(s.active, p)...)
@@ -207,6 +270,11 @@ func (s *Session) control(mark string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	switch {
+	case strings.HasPrefix(mark, "M:"):
+		if value, ok := decodeTitleContext(mark); ok {
+			s.localTitle = &value
+		}
+		return true
 	case mark == "I":
 		if !s.initSeen {
 			s.parsed = append(s.parsed, s.filterInitEcho(nil, true)...)
@@ -216,7 +284,15 @@ func (s *Session) control(mark string) bool {
 	case mark == "P":
 		if s.remote != nil {
 			s.remoteDisconnected()
+			if s.localTitle != nil {
+				s.setTitleContext(*s.localTitle)
+				s.localTitle = nil
+			}
 			return true
+		}
+		if s.localTitle != nil {
+			s.setTitleContext(*s.localTitle)
+			s.localTitle = nil
 		}
 		if !s.initial {
 			s.initial = true
@@ -289,6 +365,7 @@ func (s *Session) finishWithoutPrompt(r *request) {
 	if r.remote && s.remote != nil {
 		s.remote.ready = false
 		s.remote.orphan = r
+		s.markTitleUnknown()
 	} else {
 		s.ready = false
 	}

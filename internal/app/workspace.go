@@ -23,6 +23,7 @@ type pane struct {
 	terminal  *terminal.Terminal
 	life      *session
 	view      *controlView
+	search    paneSearch
 	focus     ui.Handle
 	ctx       context.Context
 	cancel    context.CancelFunc
@@ -64,20 +65,21 @@ type workspace struct {
 	tabs          []*workspaceTab
 	panes         map[string]*pane
 	selected      string
-	nextTab       int
 	focusRequest  string
 	terminalFocus string
 	blurPane      *pane
+	searchBlur    []*pane
 	stopping      bool
 	factory       paneFactory
+	ids           *idAllocator
 	notify        func(bool)
 	windowFocused func() bool
 	onEmpty       func()
 	onError       func(*pane, error)
 }
 
-func newWorkspace(factory paneFactory) *workspace {
-	return &workspace{panes: make(map[string]*pane), factory: factory}
+func newWorkspace(ids *idAllocator, factory paneFactory) *workspace {
+	return &workspace{panes: make(map[string]*pane), factory: factory, ids: ids}
 }
 
 func randomID() (string, error) {
@@ -168,6 +170,9 @@ func (w *workspace) markFocusLocked(id string) {
 		return
 	}
 	old := w.currentLocked()
+	if old != "" && old != id && w.panes[old] != nil {
+		w.searchBlur = append(w.searchBlur, w.panes[old])
+	}
 	if old != "" && old != id && w.panes[old] != nil && w.panes[old].tabID != p.tabID {
 		w.blurPane = w.panes[old]
 	}
@@ -203,12 +208,12 @@ func (w *workspace) create(target, direction string, focus bool) (control.Create
 		tabID = p.tabID
 	}
 	w.mu.Unlock()
-	id, err := randomID()
+	id, err := w.ids.next(sessionKind)
 	if err != nil {
 		return control.CreatedSession{}, err
 	}
 	if tabID == "" {
-		tabID, err = randomID()
+		tabID, err = w.ids.next(tabKind)
 		if err != nil {
 			return control.CreatedSession{}, err
 		}
@@ -262,8 +267,7 @@ func (w *workspace) create(target, direction string, focus bool) (control.Create
 			}
 		}
 	} else {
-		w.nextTab++
-		w.tabs = append(w.tabs, &workspaceTab{id: tabID, title: fmt.Sprintf("%02d", w.nextTab), root: leaf(id), last: id})
+		w.tabs = append(w.tabs, &workspaceTab{id: tabID, root: leaf(id), last: id})
 	}
 	if err == nil {
 		p.initial = len(w.panes) == 0 && len(w.tabs) == 1
@@ -339,7 +343,7 @@ func (w *workspace) ListSessions() (control.SessionList, error) {
 			}
 			if n.paneID != "" {
 				if p := w.panes[n.paneID]; p != nil {
-					list.Sessions = append(list.Sessions, p.info(tab.title))
+					list.Sessions = append(list.Sessions, p.info(w.tabTitleLocked(tab)))
 				}
 				return
 			}
@@ -362,7 +366,7 @@ func (w *workspace) CurrentSession() (control.CurrentSession, error) {
 		w.mu.Unlock()
 		return control.CurrentSession{}, errors.New("没有当前会话")
 	}
-	current := control.CurrentSession{SessionInfo: p.info(w.tabLocked(p.tabID).title)}
+	current := control.CurrentSession{SessionInfo: p.info(w.tabTitleLocked(w.tabLocked(p.tabID)))}
 	focused := w.windowFocused
 	w.mu.Unlock()
 	if focused != nil {
@@ -408,6 +412,7 @@ func (w *workspace) remove(id string, expected *pane) {
 		w.mu.Unlock()
 		return
 	}
+	w.searchBlur = append(w.searchBlur, p)
 	delete(w.panes, id)
 	tab := w.tabLocked(p.tabID)
 	if tab == nil {
@@ -495,6 +500,7 @@ func (w *workspace) closeTab(id string) {
 	for key, p := range w.panes {
 		if p.tabID == id {
 			panes = append(panes, p)
+			w.searchBlur = append(w.searchBlur, p)
 			delete(w.panes, key)
 		}
 	}

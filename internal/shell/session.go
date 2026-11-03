@@ -43,22 +43,23 @@ type request struct {
 
 // Session 持有窗口所用的伪终端，并在同一个 Shell 中执行 CLI 命令。
 type Session struct {
-	pty      *os.File
-	command  *exec.Cmd
-	kind     string
-	dir      string
-	token    string
-	begin    string
-	end      string
-	initPath string
-	marker   []byte
-	initLine []byte
-	initScan []byte
-	initSeen bool
-	readBuf  []byte
-	parsed   []byte
-	exited   chan struct{}
-	exitCode int
+	pty          *os.File
+	command      *exec.Cmd
+	kind         string
+	dir          string
+	token        string
+	begin        string
+	end          string
+	initPath     string
+	marker       []byte
+	initLine     []byte
+	initScan     []byte
+	initSeen     bool
+	readBuf      []byte
+	discardTitle bool
+	parsed       []byte
+	exited       chan struct{}
+	exitCode     int
 
 	mu           sync.Mutex
 	writeMu      sync.Mutex
@@ -66,6 +67,9 @@ type Session struct {
 	onState      func(bool)
 	owner        ControlOwner
 	onControl    func(ControlOwner)
+	titleContext TitleContext
+	localTitle   *TitleContext
+	onTitle      func()
 	idleStarted  time.Time
 	idleVersion  uint64
 	idleCancel   func()
@@ -105,7 +109,7 @@ func New(dir string) (*Session, error) {
 	s := &Session{
 		kind: filepath.Base(name), dir: dir, token: token,
 		begin: "__wt_begin_" + token, end: "__wt_end_" + token,
-		marker: []byte("\x1eWT:" + token + ":"), exited: make(chan struct{}),
+		marker: []byte("\x1eWT:" + token + ":"), exited: make(chan struct{}), titleContext: InitialTitleContext(),
 	}
 	if s.supported() {
 		if err := s.prepareInit(); err != nil {
@@ -245,6 +249,7 @@ func (s *Session) initScript() string {
 		restore := "__wt_restore_" + s.token
 		return fmt.Sprintf(`function %s --on-event fish_prompt
   set -l saved_status $status
+  %s
   printf '%sP\037'
   return $saved_status
 end
@@ -263,7 +268,7 @@ function %s
   return $saved_status
 end
 printf '%sI\037'
-`, prompt, mark, s.begin, previous, mark, previous, restore, previous, s.end, command, previous, mark, mark)
+`, prompt, titlePrompt(mark, true), mark, s.begin, previous, mark, previous, restore, previous, s.end, command, previous, mark, mark)
 	}
 	setup := "precmd_functions+=(" + prompt + ")"
 	if s.kind == "bash" {
@@ -272,12 +277,12 @@ printf '%sI\037'
   *) PROMPT_COMMAND="${PROMPT_COMMAND:+${PROMPT_COMMAND}; }%s" ;;
 esac`, prompt, prompt)
 	}
-	return fmt.Sprintf(`%s() { local saved_status=$?; printf '%sP\037'; return "$saved_status"; }
+	return fmt.Sprintf(`%s() { local saved_status=$?; %s printf '%sP\037'; return "$saved_status"; }
 %s() { local saved_status=$?; printf '%sS\037'; return "$saved_status"; }
 %s() { local saved_status=$1; printf '%sE:%%s\037' "$saved_status"; return "$saved_status"; }
 %s
 printf '%sI\037'
-`, prompt, mark, s.begin, mark, s.end, mark, setup, mark)
+`, prompt, titlePrompt(mark, false), mark, s.begin, mark, s.end, mark, setup, mark)
 }
 
 func (s *Session) wait() {

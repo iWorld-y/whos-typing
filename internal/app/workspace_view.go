@@ -9,12 +9,10 @@ import (
 )
 
 type workspaceView struct {
-	workspace   *workspace
-	update      func(func())
-	message     string
-	tabsScroll  ui.ScrollState
-	revealedTab string
-	ratios      map[string]*float32
+	workspace *workspace
+	update    func(func())
+	message   string
+	ratios    map[string]*float32
 }
 
 func (v *workspaceView) report(err error) {
@@ -53,9 +51,23 @@ func (v *workspaceView) view(c *ui.Context) {
 	c.OnShortcut(ui.Cmd, ui.KeyT, func() { v.create("", "") })
 	c.OnShortcut(ui.Cmd, ui.KeyD, func() { v.splitCurrent("right") })
 	c.OnShortcut(ui.Cmd|ui.Shift, ui.KeyD, func() { v.splitCurrent("down") })
+	c.OnShortcut(ui.Cmd, ui.KeyF, v.openSearch)
+	for i, key := range []ui.Key{ui.Key1, ui.Key2, ui.Key3, ui.Key4, ui.Key5, ui.Key6, ui.Key7, ui.Key8, ui.Key9} {
+		index := i
+		c.OnShortcut(ui.Cmd, key, func() { v.selectTab(index) })
+	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	v.pruneRatios(w)
+	for _, p := range w.searchBlur {
+		p.endSearch()
+	}
+	w.searchBlur = nil
+	if p := w.panes[w.currentLocked()]; p != nil && p.search.open {
+		c.OnShortcut(ui.Cmd, ui.KeyG, func() { v.navigateSearch(false) })
+		c.OnShortcut(ui.Cmd|ui.Shift, ui.KeyG, func() { v.navigateSearch(true) })
+		c.OnShortcut(0, ui.KeyEscape, func() { v.closeSearch(p) })
+	}
 	ui.Column(c).Fill().Children(func() {
 		v.tabBar(c, w)
 		if v.message != "" {
@@ -71,6 +83,9 @@ func (v *workspaceView) view(c *ui.Context) {
 		if actual != "" && request == "" && actual != w.currentLocked() {
 			p := w.panes[actual]
 			if p != nil {
+				if old := w.panes[w.currentLocked()]; old != nil {
+					old.endSearch()
+				}
 				w.selected = p.tabID
 				w.tabLocked(p.tabID).last = actual
 			}
@@ -89,56 +104,72 @@ func (v *workspaceView) view(c *ui.Context) {
 	})
 }
 
-// tabBar 保留滚动入口，并在选中标签变化时显示该标签。
-func (v *workspaceView) tabBar(c *ui.Context, w *workspace) {
-	ui.Row(c.Key("tabs-row")).FillWidth().AlignItems(ui.Center).Children(func() {
-		if ui.Button(c.Key("tabs-left"), "‹").Label("向左滚动标签").KeepFocus().Clicked() {
-			v.tabsScroll.X -= 180
+// selectTab 按当前位置切换，不把快捷键中的数字当作标识。
+func (v *workspaceView) selectTab(index int) {
+	w := v.workspace
+	w.mu.Lock()
+	if index < 0 || index >= len(w.tabs) {
+		w.mu.Unlock()
+		return
+	}
+	w.markFocusLocked(w.tabs[index].last)
+	w.mu.Unlock()
+	w.changed(true)
+}
+
+func (v *workspaceView) tabMenu(e ui.Element, w *workspace, tab *workspaceTab) {
+	tabID, paneID := tab.id, tab.last
+	e.ContextMenu(func(m *ui.Menu) {
+		if m.Item("关闭当前窗格").Chosen() {
+			go w.remove(paneID, nil)
 		}
-		ui.ScrollHorizontal(c.Key("tabs-scroll")).Grow(1).Shrink(1).MinWidth(0).Height(36).TrackScroll(&v.tabsScroll).Scrollbars(true).Children(func() {
-			selected := 0
-			for i, tab := range w.tabs {
-				if tab.id == w.selected {
-					selected = i
-					break
-				}
+		if m.Item("关闭标签页").Chosen() {
+			go w.closeTab(tabID)
+		}
+	})
+}
+
+// tabBar 在系统窗口按钮以外绘制标题或等宽标签。
+func (v *workspaceView) tabBar(c *ui.Context, w *workspace) {
+	bar := c.TitleBar()
+	height := max(bar.Height, 32)
+	ui.Row(c.Key("tabs-row")).FillWidth().Height(height).Padding(0, bar.Right+8, 0, bar.Left+8).AlignItems(ui.Center).DragWindow().Children(func() {
+		if len(w.tabs) == 0 {
+			return
+		}
+		if len(w.tabs) == 1 {
+			item := w.tabs[0]
+			title := w.tabTitleLocked(item)
+			box := ui.Row(c.Key("single-title")).FillWidth().Height(height).MinWidth(0).AlignItems(ui.Center).DragWindow()
+			v.tabMenu(box, w, item)
+			box.Children(func() { ui.Text(c, title).SingleLine().Ellipsis("…").Shrink(1).MinWidth(0).Tooltip(title) })
+			return
+		}
+		selected := 0
+		for i, tab := range w.tabs {
+			if tab.id == w.selected {
+				selected = i
+				break
 			}
-			old := selected
-			tabs := ui.TabsBase(c.Key("workspace-tabs"), &selected, len(w.tabs))
-			tabs.List.Gap(4).Children(func() {
-				for i, item := range w.tabs {
-					label := item.title
-					runes := []rune(label)
-					if len(runes) > 20 {
-						label = string(runes[:20]) + "…"
-					}
-					c.Key("tab-" + item.id)
-					tab := tabs.Tab(i).Padding(6, 12).Radius(6)
-					tabID, paneID := item.id, item.last
-					tab.ContextMenu(func(m *ui.Menu) {
-						if m.Item("关闭当前窗格").Chosen() {
-							go w.remove(paneID, nil)
-						}
-						if m.Item("关闭标签页").Chosen() {
-							go w.closeTab(tabID)
-						}
-					})
-					if i == selected {
-						tab.Background(c.Theme().Surface).FontWeight(600)
-						if item.id != v.revealedTab {
-							tab.ScrollIntoView()
-							v.revealedTab = item.id
-						}
-					}
-					tab.Children(func() { ui.Text(c, label).SingleLine() })
+		}
+		old := selected
+		tabs := ui.TabsBase(c.Key("workspace-tabs"), &selected, len(w.tabs))
+		tabs.List.FillWidth().Height(height).MinWidth(0).Children(func() {
+			for i, item := range w.tabs {
+				title := w.tabTitleLocked(item)
+				c.Key("tab-" + item.id)
+				tab := tabs.Tab(i).WidthPercent(100/float32(len(w.tabs))).MinWidth(0).Shrink(1).Height(height).Padding(0, 8).AlignItems(ui.Center).Label(title).Tooltip(title)
+				v.tabMenu(tab, w, item)
+				if i == selected {
+					tab.FontWeight(600)
+				} else {
+					tab.Background(c.Theme().Surface)
 				}
-			})
-			if tabs.List.Changed() && selected != old && selected >= 0 && selected < len(w.tabs) {
-				w.markFocusLocked(w.tabs[selected].last)
+				tab.Children(func() { ui.Text(c, title).SingleLine().Ellipsis("…").Shrink(1).MinWidth(0) })
 			}
 		})
-		if ui.Button(c.Key("tabs-right"), "›").Label("向右滚动标签").KeepFocus().Clicked() {
-			v.tabsScroll.X += 180
+		if tabs.List.Changed() && selected != old && selected >= 0 && selected < len(w.tabs) {
+			w.markFocusLocked(w.tabs[selected].last)
 		}
 	})
 }
@@ -152,15 +183,21 @@ func (v *workspaceView) node(c *ui.Context, n *layoutNode, request string, actua
 		if p == nil || p.terminal == nil || p.view == nil {
 			return
 		}
-		c.Key("pane-" + p.id)
-		p.view.view(c, func() {
-			e := terminal.View(c.Key("terminal-"+p.id), p.terminal).Label(fmt.Sprintf("终端 %s", p.id)).Fill().Bind(&p.focus)
-			if request == p.id {
-				e.Focus()
+		ui.Column(c.Key("pane-" + p.id)).Fill().Children(func() {
+			if p.search.open {
+				v.searchBar(c, p)
 			}
-			if e.Focused() {
-				*actual = p.id
-			}
+			ui.Box(c.Key("pane-terminal-area-" + p.id)).FillWidth().Grow(1).MinHeight(0).Children(func() {
+				p.view.view(c, func() {
+					e := terminal.View(c.Key("terminal-"+p.id), p.terminal).Label(fmt.Sprintf("终端 %s", p.id)).Fill().Bind(&p.focus)
+					if request == p.id {
+						e.Focus()
+					}
+					if e.Focused() {
+						*actual = p.id
+					}
+				})
+			})
 		})
 		return
 	}
