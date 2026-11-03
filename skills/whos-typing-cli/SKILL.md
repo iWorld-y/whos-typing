@@ -18,6 +18,8 @@ Who's Typing 的 CLI 连接当前用户正在运行的 GUI，在指定 Shell 会
 
 ## 发现会话并固定目标
 
+新服务返回 `session_01`、`session_02` 等 `session_id`，以及 `tab_01`、`tab_02` 等 `tab_id`。两组十进制序号独立递增，数字部分至少两位，超过 99 后自然增长，例如 `session_100` 和 `tab_100`。操作时使用返回的完整标识，不要截取前缀、去掉补零、根据标题猜测 ID，或把界面位置作为 CLI 目标。关闭会话或正常重启后 ID 不复用；位置变化不改变 ID。新 CLI 仍可原样使用支持多会话的旧 GUI 返回的完整长 ID。
+
 用户说「这个会话」时，先查询当前会话一次，并将返回的 `session_id` 固定用于后续操作。窗口切到后台不会清除最后选中的会话，`window_focused` 表示查询时窗口是否位于前台。连续操作期间不要反复按焦点选择目标；用户切换窗格后，已经选定的 ID 不变。
 
 ```sh
@@ -47,9 +49,11 @@ whos-typing-cli --session "$SESSION_ID" session split --direction down --focus -
 whos-typing-cli --session "$SESSION_ID" session focus
 ```
 
-创建结果包含新 `session_id` 和 `tab_id`。标签页默认按创建顺序命名为 `01`、`02` 等，关闭后不会重排或复用编号。`tab rename` 按 `tab_id` 修改本次运行中的标签名，拒绝空白名称；Shell 标题不会覆盖标签名。`session list --json` 和 `session current --json` 返回 `tab_title`。CLI 创建默认保留原有焦点，只有用户需要时才使用 `--focus` 或 `session focus`。新会话是独立本地 Shell，不复制原会话的 SSH 连接。创建响应丢失时不要自动重试；先通过 `session list --json` 核对已有会话。
+创建结果包含新 `session_id` 和 `tab_id`。标签页默认显示最后选中窗格的 `username@hostname:/path`，不显示 ID 或编号。新标签追加到末尾，GUI 的 `Cmd+1` 至 `Cmd+9` 仅按当前位置切换。`tab rename` 按 `tab_id` 修改本次运行中的标签名，拒绝空白名称；人工名称不会被 Shell 标题、目录更新或窗格切换覆盖。`session list --json` 和 `session current --json` 返回 `tab_title`。CLI 创建默认保留原有焦点，只有用户需要时才使用 `--focus` 或 `session focus`。新会话是独立本地 Shell，不复制原会话的 SSH 连接。创建响应丢失时不要自动重试；先通过 `session list --json` 核对已有会话。
 
 ## 远端 Bash
+
+默认标签标题只有在完成远端接入后才保证更新远端上下文；未接入 SSH 时可能仍显示本地或最近确认的信息，不能仅凭标题认定服务器身份。
 
 只有用户在 GUI 中进入目标服务器的交互式 Bash 后，才能接入。确认目标及空提示符，然后运行：
 

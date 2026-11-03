@@ -5,6 +5,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 
@@ -52,6 +54,14 @@ func Run() error {
 		}
 		_ = server.Close()
 	}()
+	configDir, err := os.UserConfigDir()
+	if err != nil {
+		return fmt.Errorf("获取用户配置目录失败: %w", err)
+	}
+	ids, err := newIDAllocator(filepath.Join(configDir, "whos-typing"))
+	if err != nil {
+		return err
+	}
 	var startup appError
 	var ws *workspace
 	mygo.App.WhenReady(func() {
@@ -62,10 +72,10 @@ func Run() error {
 		}
 		confirmation := &attachConfirmation{}
 		var view workspaceView
-		win := mygo.NewWindow(mygo.WindowOptions{Title: "Who's Typing", Width: 760, Height: 480, Hidden: true,
+		win := mygo.NewWindow(mygo.WindowOptions{Title: "Who's Typing", Width: 760, Height: 480, Hidden: true, TitleBarStyle: mygo.TitleBarHidden,
 			Content: ui.View(func(c *ui.Context) { view.view(c); confirmation.view(c) }),
 		})
-		ws = newWorkspace(func(id string, onExit func(int)) (*pane, error) {
+		ws = newWorkspace(ids, func(id string, onExit func(int)) (*pane, error) {
 			return makePane(server.Dir(), win, confirmation, ws, id, onExit)
 		})
 		view.workspace = ws

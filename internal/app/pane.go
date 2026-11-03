@@ -26,6 +26,10 @@ func makePane(dir string, win *mygo.Window, confirmation *attachConfirmation, wo
 		Conn: sh, OnExit: life.onExit, OnKey: sh.OnKey,
 		OnPaste: func(transfer.Data) bool { return sh.OnPaste() },
 		OnTitle: func(string) { win.Update(func() {}) },
+		OnSearch: func(status terminal.SearchStatus) {
+			p.searchStatus(status)
+			win.Update(func() {})
+		},
 	})
 	if err != nil {
 		cancel()
@@ -56,6 +60,7 @@ func makePane(dir string, win *mygo.Window, confirmation *attachConfirmation, wo
 			})
 		}()
 	}
+	sh.SetTitleHandler(func() { win.Update(func() {}) })
 	sh.SetSender(term.Send)
 	sh.SetControlHandler(func(owner shell.ControlOwner) {
 		win.Update(func() {

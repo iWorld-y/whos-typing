@@ -65,6 +65,9 @@ func TestParseWorkspaceArguments(t *testing.T) {
 		invalid                             bool
 	}{
 		{args: []string{"--session", "abc", "--timeout", "30s", "printf '%s' --x"}, action: "exec", session: "abc", command: "printf '%s' --x"},
+		{args: []string{"--session", "session_01", "pwd"}, action: "exec", session: "session_01", command: "pwd"},
+		{args: []string{"--session", "session_100", "pwd"}, action: "exec", session: "session_100", command: "pwd"},
+		{args: []string{"--session", "1234567890abcdef1234567890abcdef", "pwd"}, action: "exec", session: "1234567890abcdef1234567890abcdef", command: "pwd"},
 		{args: []string{"--session", "abc", "--", "--help"}, action: "exec", session: "abc", command: "--help"},
 		{args: []string{"session", "list", "--json"}, action: "session.list", json: true},
 		{args: []string{"session", "current", "--json"}, action: "session.current", json: true},
@@ -92,6 +95,12 @@ func TestParseWorkspaceArguments(t *testing.T) {
 }
 
 func TestParseRenameTab(t *testing.T) {
+	for _, id := range []string{"tab_01", "tab_100"} {
+		o, err := parseArgs([]string{"tab", "rename", "--tab", id, "名称"})
+		if err != nil || o.tab != id {
+			t.Fatalf("标签 ID 被改写: %q %+v %v", id, o, err)
+		}
+	}
 	o, err := parseArgs([]string{"tab", "rename", "--tab", "tab-id", "工作 会话"})
 	if err != nil || o.action != "tab.rename" || o.tab != "tab-id" || o.title != "工作 会话" {
 		t.Fatalf("解析错误: %+v %v", o, err)
