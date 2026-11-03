@@ -145,7 +145,7 @@ func (s *Session) Execute(ctx context.Context, command string) control.Result {
 		s.mu.Unlock()
 		return control.Result{Err: fmt.Errorf("创建输出文件失败: %w", err)}
 	}
-	r := &request{command: command, source: sourceName, output: output, done: make(chan struct{}), remote: remote}
+	r := &request{command: command, source: sourceName, output: output, done: make(chan struct{}), remote: remote, humanBefore: s.owner == ControlHuman}
 	r.barrier = []byte("\x00WT-REQUEST:" + s.token + ":" + filepath.Base(output.Name()))
 	s.queued = r
 	s.stopIdle()
@@ -164,7 +164,7 @@ func (s *Session) Execute(ctx context.Context, command string) control.Result {
 		if s.queued == r {
 			s.queued = nil
 			_ = os.Remove(r.source)
-			s.startIdle()
+			s.restoreQueuedControl(r)
 		}
 		if s.active == r && !r.finished {
 			s.markUnknown(r)
@@ -264,6 +264,7 @@ func (s *Session) Write(p []byte) (int, error) {
 			ready = s.remote != nil && !s.remote.attaching && s.remote.ready && len(s.remote.idleOutput) == 0 && !s.remote.dirty && s.remote.pending == 0 && s.remote.orphan == nil
 		}
 		if s.closed || !ready || s.active != nil {
+			s.restoreQueuedControl(r)
 			s.finish(r, 1, errors.New("终端有人工输入或命令正在执行"))
 			return len(p), nil
 		}
@@ -309,7 +310,8 @@ func (s *Session) Write(p []byte) (int, error) {
 	if terminalReply.Match(p) {
 		return s.writePTY(p)
 	}
-	if s.blocksHumanInput() {
+	// 屏障前已排队的人工输入应先处理，再决定能否执行 CLI 命令。
+	if s.blocksHumanInput() && (s.queued == nil || !s.queued.humanBefore) {
 		if isInterrupt(p) {
 			remote := s.remote
 			_, err := s.writePTY([]byte{3})

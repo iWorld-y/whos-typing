@@ -57,6 +57,15 @@ func (s *Session) setControl(owner ControlOwner) {
 	}
 }
 
+// restoreQueuedControl 在排队命令未执行时恢复原有控制状态。
+func (s *Session) restoreQueuedControl(r *request) {
+	if r.humanBefore && s.owner == ControlAgent {
+		s.setControl(ControlHuman)
+		return
+	}
+	s.startIdle()
+}
+
 // TakeOver 让人类立即取得输入控制权，不中断已经运行的命令。
 func (s *Session) TakeOver() {
 	s.mu.Lock()

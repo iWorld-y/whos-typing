@@ -35,6 +35,7 @@ type request struct {
 	capture            []byte
 	prefix             []byte
 	remote             bool
+	humanBefore        bool // 排队前由人类控制，屏障之前的输入仍须处理。
 	inject             []byte
 	injecting          bool
 	resetWriteDeadline bool
