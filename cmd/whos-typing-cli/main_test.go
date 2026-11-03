@@ -3,11 +3,23 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 )
 
 func TestLocalOptions(t *testing.T) {
+	data, err := os.ReadFile("../../mygo.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var config struct {
+		Version string `json:"version"`
+	}
+	if err := json.Unmarshal(data, &config); err != nil || config.Version == "" {
+		t.Fatalf("无效的版本配置: %v", err)
+	}
 	tests := []struct {
 		name    string
 		args    []string
@@ -21,7 +33,7 @@ func TestLocalOptions(t *testing.T) {
 			handled: true,
 			want:    []string{"用法:", "--timeout", "attach --remote", "session", "--help", "--version"},
 		},
-		{name: "version", args: []string{"--version"}, handled: true, exact: "whos-typing-cli 0.1.0\n"},
+		{name: "version", args: []string{"--version"}, handled: true, exact: "whos-typing-cli " + config.Version + "\n"},
 		{name: "no arguments"},
 		{name: "shell command", args: []string{"pwd"}},
 		{name: "timeout command", args: []string{"--timeout", "5s", "--help"}},

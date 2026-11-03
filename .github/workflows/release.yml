@@ -1,0 +1,115 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  metadata:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Test release script
+        run: bash scripts/release_test.sh
+
+      - name: Validate version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(jq -er '.version | select(type == "string")' mygo.json)
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "版本格式无效：$version" >&2
+            exit 1
+          fi
+          tag="v$version"
+          if [[ "$GITHUB_EVENT_NAME" == push && "$GITHUB_REF_NAME" != "$tag" ]]; then
+            echo "标签 $GITHUB_REF_NAME 与版本 $version 不一致。" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+  build-macos:
+    needs: metadata
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Install fish for tests
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+          HOMEBREW_NO_INSTALL_CLEANUP: "1"
+        run: |
+          if [ ! -x /opt/homebrew/bin/fish ]; then brew install fish; fi
+          /opt/homebrew/bin/fish --version
+          echo /opt/homebrew/bin >> "$GITHUB_PATH"
+
+      - name: Build DMG
+        run: make package
+
+      - name: Verify DMG and run tests
+        env:
+          VERSION: ${{ needs.metadata.outputs.version }}
+        run: bash scripts/verify-dmg.sh "output/whos-typing-${VERSION}-arm64.dmg" "$VERSION"
+
+      - name: Upload DMG artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: whos-typing-${{ needs.metadata.outputs.version }}-arm64
+          path: output/whos-typing-${{ needs.metadata.outputs.version }}-arm64.dmg
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    needs: [metadata, build-macos]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Download DMG artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: whos-typing-${{ needs.metadata.outputs.version }}-arm64
+          path: release-assets
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.metadata.outputs.tag }}
+          VERSION: ${{ needs.metadata.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          dmg="release-assets/whos-typing-${VERSION}-arm64.dmg"
+          test -f "$dmg"
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $TAG 已存在，不覆盖已有发布物。" >&2
+            exit 1
+          fi
+          gh release create "$TAG" "$dmg" --repo "$GITHUB_REPOSITORY" \
+            --verify-tag --generate-notes --title "Who's Typing $VERSION"

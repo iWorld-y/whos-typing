@@ -13,7 +13,7 @@ stage=$(mktemp -d "${TMPDIR:-/tmp}/whos-typing-package.XXXXXX")
 trap 'rm -rf "$stage"' EXIT
 
 cp -R "$project_dir/cmd" "$project_dir/internal" "$stage/"
-cp "$project_dir/go.mod" "$project_dir/go.sum" "$project_dir/mygo.json" "$stage/"
+cp "$project_dir/go.mod" "$project_dir/go.sum" "$project_dir/mygo.json" "$project_dir/appinfo.go" "$stage/"
 mkdir -p "$stage/resources/darwin-$arch/bin" "$stage/resources/skills"
 cp "$project_dir/output/whos-typing-cli" "$stage/resources/darwin-$arch/bin/"
 cp -R "$project_dir/skills/whos-typing-cli" "$stage/resources/skills/"

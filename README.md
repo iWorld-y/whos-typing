@@ -107,6 +107,8 @@ CLI 超时或断开不代表命令已停止，结果可能未知。先在 GUI �
 
 在 macOS 上执行 `make package`，可以在 `output/` 生成当前 Go 架构的 DMG。打包要求和签名说明见 [开发文档](docs/development.md)。
 
+发布前，在 `mygo.json` 中更新版本号并推送到 `master`；工作区干净且与远端一致时，执行 `make release`。脚本会推送版本标签，由 GitHub Actions 构建、校验 DMG 并创建 Release。
+
 ```sh
 GOWORK=off go test ./...
 GOWORK=off go vet ./...

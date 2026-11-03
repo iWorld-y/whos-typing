@@ -4,9 +4,9 @@ package main
 import (
 	"fmt"
 	"io"
-)
 
-const version = "0.1.0"
+	"whos-typing"
+)
 
 const usage = `用法: whos-typing-cli [--session ID] [--timeout 时间] [--] '命令'
       whos-typing-cli [--session ID] attach --remote --shell bash [--auto]
@@ -30,7 +30,7 @@ func handleLocalOption(args []string, out io.Writer) bool {
 	case "--help":
 		fmt.Fprintln(out, usage)
 	case "--version":
-		fmt.Fprintln(out, "whos-typing-cli", version)
+		fmt.Fprintln(out, "whos-typing-cli", whostyping.Version())
 	default:
 		return false
 	}

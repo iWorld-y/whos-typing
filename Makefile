@@ -1,4 +1,4 @@
-.PHONY: build package run
+.PHONY: build package release run
 
 build:
 	@mkdir -p output
@@ -6,6 +6,9 @@ build:
 
 package: build
 	@sh scripts/package-macos.sh
+
+release:
+	@bash scripts/release.sh
 
 # 后台任务启用作业控制，确保内置 Bash 的 Ctrl+C 可用。
 run: build
