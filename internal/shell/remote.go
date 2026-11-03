@@ -28,6 +28,8 @@ type remoteSession struct {
 	dirty      bool
 	line       []byte
 	lineEdited bool
+	pasting    bool
+	pasteMark  []byte
 	exit       bool
 	orphan     *request
 	prompt     string
@@ -43,10 +45,15 @@ type remoteSession struct {
 	resetWrite bool
 	echo       []byte
 	echoDone   bool
+	recovery   bool
 }
 
 // Attach 等待用户在远端 Bash 中手动执行接入命令；它不会写入终端。
 func (s *Session) Attach(ctx context.Context, shellName string, show func(string) error) error {
+	return s.attach(ctx, shellName, show, false)
+}
+
+func (s *Session) attach(ctx context.Context, shellName string, show func(string) error, recovery bool) error {
 	if shellName != "bash" {
 		return errors.New("目前只支持接入远端 Bash")
 	}
@@ -54,15 +61,20 @@ func (s *Session) Attach(ctx context.Context, shellName string, show func(string
 	if _, err := rand.Read(nonce[:]); err != nil {
 		return fmt.Errorf("生成远端会话标识失败: %w", err)
 	}
-	r := &remoteSession{token: hex.EncodeToString(nonce[:]), attaching: true, attachDone: make(chan error, 1)}
+	r := &remoteSession{token: hex.EncodeToString(nonce[:]), attaching: true, attachDone: make(chan error, 1), recovery: recovery}
 	r.marker = []byte("\x1eWT:" + r.token + ":")
-	r.bootstrap = remoteBootstrap(r.token)
 	s.mu.Lock()
 	if s.closed || s.send == nil {
 		s.mu.Unlock()
 		return errors.New("终端会话尚未启动或已经结束")
 	}
-	if s.active != nil || s.queued != nil || (s.remote != nil && (s.remote.attaching || s.remote.ready)) {
+	if recovery {
+		if err := s.canRecoverRemote(); err != nil {
+			s.mu.Unlock()
+			return err
+		}
+	}
+	if s.active != nil || s.queued != nil || (s.remote != nil && (s.remote.attaching || (!recovery && s.remote.ready))) {
 		s.mu.Unlock()
 		return errors.New("终端正在执行命令或远端已接入")
 	}
@@ -73,11 +85,29 @@ func (s *Session) Attach(ctx context.Context, shellName string, show func(string
 	}
 	r.group = group
 	r.keys = s.keys
+	previous := s.remote
 	if s.remote != nil {
 		s.retired = append(s.retired, s.remote)
 	}
+	tokens := make([]string, 0, len(s.retired))
+	for _, old := range s.retired {
+		tokens = append(tokens, old.token)
+	}
+	r.bootstrap = remoteBootstrap(r.token, tokens...)
 	s.remote = r
 	s.mu.Unlock()
+	if recovery {
+		defer func() {
+			s.mu.Lock()
+			defer s.mu.Unlock()
+			if s.remote == nil && !s.closed {
+				if group, err := s.foregroundGroup(); err == nil && group == previous.group {
+					previous.ready = false
+					s.remote = previous
+				}
+			}
+		}()
+	}
 	if err := show(r.bootstrap); err != nil {
 		s.cancelAttach(r)
 		return err
@@ -106,21 +136,25 @@ func (s *Session) Attach(ctx context.Context, shellName string, show func(string
 
 // AttachAuto 等待界面确认后，将接入命令排入终端输入队列。
 func (s *Session) AttachAuto(ctx context.Context, shellName string, confirm func(context.Context) error) error {
+	return s.attachAuto(ctx, shellName, confirm, false)
+}
+
+func (s *Session) attachAuto(ctx context.Context, shellName string, confirm func(context.Context) error, recovery bool) error {
 	if confirm == nil {
 		return errors.New("远端接入需要窗口确认")
 	}
 	s.mu.Lock()
 	manual := s.owner == ControlHumanTakeover
 	s.mu.Unlock()
-	if manual {
+	if manual && !recovery {
 		return errors.New("终端已由人类接管，请等待交还 Agent")
 	}
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
-	err := s.Attach(ctx, shellName, func(script string) error {
+	err := s.attach(ctx, shellName, func(script string) error {
 		s.mu.Lock()
 		r := s.remote
-		if r == nil || !r.attaching || s.owner == ControlHumanTakeover {
+		if r == nil || !r.attaching || (s.owner == ControlHumanTakeover && !r.recovery) {
 			s.mu.Unlock()
 			return errors.New("终端已由人类接管，远端接入已取消")
 		}
@@ -130,7 +164,7 @@ func (s *Session) AttachAuto(ctx context.Context, shellName string, confirm func
 			return err
 		}
 		return s.queueAttach(ctx, script)
-	})
+	}, recovery)
 	if errors.Is(err, context.DeadlineExceeded) {
 		return errors.New("远端接入超时，请重新确认")
 	}
@@ -147,7 +181,7 @@ func (s *Session) queueAttach(ctx context.Context, script string) error {
 	if r == nil || !r.attaching || r.bootstrap != script || s.closed || s.send == nil {
 		return errors.New("远端接入已经结束")
 	}
-	if s.owner == ControlHumanTakeover {
+	if s.owner == ControlHumanTakeover && !r.recovery {
 		return errors.New("终端已由人类接管，请等待交还 Agent")
 	}
 	if err := ctx.Err(); err != nil {
@@ -215,7 +249,7 @@ func remoteQuote(text string) string {
 	return "'" + strings.ReplaceAll(text, "'", "'\\''") + "'"
 }
 
-func remoteBootstrap(token string) string {
+func remoteBootstrap(token string, oldTokens ...string) string {
 	mark := "\\036WT:" + token + ":"
 	prompt := "__wt_prompt_" + token
 	emit := "__wt_emit_" + token
@@ -234,7 +268,7 @@ func remoteBootstrap(token string) string {
 		`{{ATTR}}=$(declare -p "${{{VARIABLE}}}" 2>/dev/null || :); {{ATTR}}="${{{ATTR}}#declare -}"; {{ATTR}}="${{{ATTR}}%% *}";`,
 		`case "${{{ATTR}}}" in *r*) {{CHECK}}=1 ;; esac; done;`,
 		`if [ "${{{CHECK}}}" = 1 ]; then unset {{CHECK}} {{ATTR}} {{VARIABLE}}; builtin printf '{{MARK}}F\037';`,
-		`else unset {{CHECK}} {{ATTR}} {{VARIABLE}}; {{GEN}}=0;`,
+		`else unset {{CHECK}} {{ATTR}} {{VARIABLE}}; {{CLEANUP}} {{GEN}}=0;`,
 		`{{EMIT}}(){ builtin printf '{{MARK}}P:%s\037' "${{{GEN}}}"; };`,
 		`{{PROMPT}}(){ local s=$? a p; a=$(declare -p PS1 2>/dev/null || :); a="${a#declare -}"; a="${a%% *}";`,
 		`case "$a" in *r*) builtin printf '{{MARK}}F\037'; return "$s" ;; esac;`,
@@ -252,6 +286,7 @@ func remoteBootstrap(token string) string {
 		`unset {{ATTR}}; builtin printf '{{MARK}}I\037'; fi; fi`,
 	}, " ")
 	script = strings.NewReplacer(
+		"{{CLEANUP}}", remoteCleanup(oldTokens),
 		"{{MARK}}", mark, "{{PROMPT}}", prompt, "{{EMIT}}", emit,
 		"{{GEN}}", generation, "{{BEGIN}}", begin, "{{RESTORE}}", restore,
 		"{{END}}", end, "{{PREVIOUS}}", previous, "{{DATA}}", data,
@@ -298,7 +333,7 @@ func (r *remoteSession) attachInputError(s *Session) error {
 }
 
 func (r *remoteSession) trackInput(s *Session, p []byte) {
-	if match := kittyKey.FindSubmatch(p); len(match) != 0 {
+	if match := kittyKey.FindSubmatch(p); !r.pasting && len(r.pasteMark) == 0 && len(match) != 0 {
 		code, _ := strconv.Atoi(string(match[1]))
 		mods := 1
 		if len(match[2]) != 0 {
@@ -320,23 +355,54 @@ func (r *remoteSession) trackInput(s *Session, p []byte) {
 		return
 	}
 	for _, b := range p {
-		switch b {
-		case '\r', '\n':
-			r.submit(s)
-		case 3:
-			r.pending++
-			r.dirty = s.keys > s.submitted
-			r.lineEdited = true
-		case 4:
-			r.exit = !r.dirty && r.pending == 0
-			r.pending++
-		default:
+		if b == '\x1b' || len(r.pasteMark) != 0 {
 			r.dirty = true
-			if b >= 32 && b <= 126 {
-				r.line = append(r.line, b)
-			} else {
-				r.lineEdited = true
+			r.pasteMark = append(r.pasteMark, b)
+			mark := "\x1b[200~"
+			if r.pasting {
+				mark = "\x1b[201~"
 			}
+			for len(r.pasteMark) != 0 {
+				if string(r.pasteMark) == mark {
+					r.pasting = !r.pasting
+					r.lineEdited = true
+					r.pasteMark = nil
+					break
+				}
+				if strings.HasPrefix(mark, string(r.pasteMark)) {
+					break
+				}
+				r.trackInputByte(s, r.pasteMark[0])
+				r.pasteMark = r.pasteMark[1:]
+			}
+			continue
+		}
+		r.trackInputByte(s, b)
+	}
+}
+
+// trackInputByte 只将粘贴之外的换行视为提交，粘贴内容保持未提交状态。
+func (r *remoteSession) trackInputByte(s *Session, b byte) {
+	if r.pasting {
+		r.dirty = true
+		return
+	}
+	switch b {
+	case '\r', '\n':
+		r.submit(s)
+	case 3:
+		r.pending++
+		r.dirty = s.keys > s.submitted
+		r.lineEdited = true
+	case 4:
+		r.exit = !r.dirty && r.pending == 0
+		r.pending++
+	default:
+		r.dirty = true
+		if b >= 32 && b <= 126 {
+			r.line = append(r.line, b)
+		} else {
+			r.lineEdited = true
 		}
 	}
 }

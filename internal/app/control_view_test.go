@@ -102,6 +102,34 @@ func TestControlViewTakeOverAndReturn(t *testing.T) {
 	}
 }
 
+func TestControlViewRemoteRecoveryRequiresExplicitClick(t *testing.T) {
+	view := &controlView{owner: shell.ControlHumanTakeover}
+	view.control = &fakeViewControl{view: view, returnErr: shell.ErrRemoteNotReady}
+	called := 0
+	view.recoverRemote = func() { called++; view.recovering = true }
+	tester := ui.NewTester(func(c *ui.Context) {
+		view.view(c, func() { ui.Text(c, "终端内容") })
+	}, 320, 240)
+	tester.Frame()
+	if tester.HasText("重新接入") {
+		t.Fatal("交还失败前不应显示恢复入口")
+	}
+	if err := tester.Click("交还 Agent"); err != nil {
+		t.Fatal(err)
+	}
+	if !tester.HasText("重新接入") || called != 0 || view.owner != shell.ControlHumanTakeover {
+		t.Fatal("交还失败只能提供恢复入口，不能自动重新接入")
+	}
+	if err := tester.Click("重新接入"); err != nil {
+		t.Fatal(err)
+	}
+	tester.Frame()
+	_, recoverButton := tester.Find("重新接入")
+	if called != 1 || recoverButton || view.owner != shell.ControlHumanTakeover {
+		t.Fatalf("恢复期间应保持人类控制并避免重复发起: called=%d button=%v owner=%v", called, recoverButton, view.owner)
+	}
+}
+
 func TestControlViewCapsuleErrorFitsNarrowWindow(t *testing.T) {
 	for _, width := range []int{180, 240, 320} {
 		t.Run(fmt.Sprint(width), func(t *testing.T) {

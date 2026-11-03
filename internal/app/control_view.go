@@ -2,6 +2,7 @@
 package app
 
 import (
+	"errors"
 	"time"
 
 	"github.com/egoist/mygo/plugins/glass"
@@ -18,13 +19,16 @@ type terminalControl interface {
 }
 
 type controlView struct {
-	control   terminalControl
-	owner     shell.ControlOwner
-	started   time.Time
-	pointerX  float32
-	pointerY  float32
-	pointerAt time.Time
-	message   string
+	control       terminalControl
+	owner         shell.ControlOwner
+	started       time.Time
+	pointerX      float32
+	pointerY      float32
+	pointerAt     time.Time
+	message       string
+	recoverRemote func()
+	recoverable   bool
+	recovering    bool
 }
 
 // view 显示终端内容，并根据控制方绘制特效和操作栏。
@@ -112,16 +116,23 @@ func (v *controlView) controlBar(c *ui.Context, width float32) {
 				ui.Text(c, label).SingleLine().Translate(0, -1)
 			})
 			if button.Clicked() {
+				v.recoverable = false
 				if v.owner == shell.ControlAgent {
 					v.message = ""
 					v.control.TakeOver()
 				} else if err := v.control.ReturnControl(); err != nil {
 					v.message = err.Error()
+					v.recoverable = errors.Is(err, shell.ErrRemoteNotReady)
 				} else {
 					v.message = ""
 				}
 			}
 		})
+		if v.owner == shell.ControlHumanTakeover && v.recoverable && v.recoverRemote != nil && !v.recovering {
+			if ui.Button(c.Key("recover-remote"), "重新接入").KeepFocus().Clicked() {
+				v.recoverRemote()
+			}
+		}
 		if v.message != "" {
 			ui.Text(c, v.message).FontSize(12).TextColor(errorColor)
 		}

@@ -761,6 +761,24 @@ func TestRemoteInteractiveInputRequiresReattach(t *testing.T) {
 	}
 }
 
+func TestRemotePasteNewlinesAreNotSubmissions(t *testing.T) {
+	r := &remoteSession{ready: true}
+	s := &Session{remote: r}
+	// 粘贴边界可以被输入队列拆开，粘贴内的换行不是提交按键。
+	for _, b := range []byte("\x1b[200~(\nprintf ok\n)\x1b[201~") {
+		r.trackInput(s, []byte{b})
+	}
+	if r.pending != 0 || !r.dirty {
+		t.Fatalf("尚未提交的粘贴状态错误: pending=%d dirty=%v", r.pending, r.dirty)
+	}
+	r.trackInput(s, []byte("\r"))
+	s.controlRemote(r, "C:1")
+	s.controlRemote(r, "P:1")
+	if !r.ready || r.pending != 0 || r.dirty {
+		t.Fatalf("粘贴执行后的提示符未恢复: pending=%d dirty=%v ready=%v", r.pending, r.dirty, r.ready)
+	}
+}
+
 func TestRemoteRawOutputWithLocalFish(t *testing.T) {
 	fish, err := exec.LookPath("fish")
 	if err != nil {

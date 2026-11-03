@@ -119,6 +119,9 @@ func (s *Session) ReturnControl() error {
 		ready = !r.attaching && r.ready && len(r.idleOutput) == 0 && !r.dirty && r.pending == 0 && r.orphan == nil
 	}
 	if !ready || s.queued != nil || s.active != nil {
+		if s.remote != nil && s.canRecoverRemote() == nil {
+			return ErrRemoteNotReady
+		}
 		return errors.New("终端尚未就绪，请完成当前输入或等待前台程序")
 	}
 	s.setControl(ControlAgent)

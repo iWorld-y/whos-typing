@@ -206,12 +206,14 @@ func (s *Session) Write(p []byte) (int, error) {
 			s.failAttach(r, err)
 			return len(p), nil
 		}
-		if s.owner == ControlHumanTakeover {
+		if s.owner == ControlHumanTakeover && !r.recovery {
 			s.failAttach(r, errors.New("终端已由人类接管，远端接入未发送"))
 			return len(p), nil
 		}
 		s.stopIdle()
-		s.setControl(ControlAgent)
+		if !r.recovery {
+			s.setControl(ControlAgent)
+		}
 		payload := []byte(r.bootstrap + "\r")
 		r.input = append([]byte(nil), payload...)
 		r.injected = true

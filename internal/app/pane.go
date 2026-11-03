@@ -35,6 +35,27 @@ func makePane(dir string, win *mygo.Window, confirmation *attachConfirmation, wo
 	p.terminal = term
 	p.closeFn = life.close
 	p.target = controller{Session: sh, session: life, confirmation: confirmation, pane: p}
+	p.view.recoverRemote = func() {
+		if p.view.recovering {
+			return
+		}
+		p.view.recovering = true
+		p.view.message = "等待确认远端 Bash 空提示符"
+		go func() {
+			err := sh.RecoverRemote(ctx, func(ctx context.Context) error {
+				return confirmation.askTarget(ctx, p.id, p.tabID)
+			})
+			win.Update(func() {
+				p.view.recovering = false
+				if err != nil {
+					p.view.message = err.Error()
+				} else {
+					p.view.message = ""
+					p.view.recoverable = false
+				}
+			})
+		}()
+	}
 	sh.SetSender(term.Send)
 	sh.SetControlHandler(func(owner shell.ControlOwner) {
 		win.Update(func() {
