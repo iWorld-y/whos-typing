@@ -8,11 +8,18 @@ import (
 
 const version = "0.1.0"
 
-const usage = `用法: whos-typing-cli [--timeout 时间] '命令'
-      whos-typing-cli attach --remote --shell bash [--auto]
-      whos-typing-cli session {read|status|release}
+const usage = `用法: whos-typing-cli [--session ID] [--timeout 时间] [--] '命令'
+      whos-typing-cli [--session ID] attach --remote --shell bash [--auto]
+      whos-typing-cli [--session ID] session {read|status|release|focus}
+      whos-typing-cli session {list|current} [--json]
+      whos-typing-cli tab new [--focus] [--json]
+      whos-typing-cli tab rename --tab ID '标题'
+      whos-typing-cli [--session ID] session split --direction {right|down} [--focus] [--json]
       whos-typing-cli --help
-      whos-typing-cli --version`
+      whos-typing-cli --version
+
+多个会话时，执行、读取、控制、接入和分屏必须指定 --session。
+要操作“这个会话”，先查询 session current --json，再固定返回的 ID。`
 
 // handleLocalOption 处理无需连接终端的本地选项。
 func handleLocalOption(args []string, out io.Writer) bool {

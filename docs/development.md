@@ -1,6 +1,6 @@
 # 本地开发与验收
 
-whos-typing 使用 Go 和 MyGo 原生 UI，在一个窗口中运行本地用户 Shell。用户可以直接操作终端，也可以通过 CLI 将命令发送到同一个会话。
+whos-typing 使用 Go 和 MyGo 原生 UI，在一个窗口中运行多个独立的本地 Shell 会话。用户可以直接操作终端，也可以通过 CLI 将命令发送到指定会话。
 
 ## 环境与依赖
 
@@ -25,6 +25,38 @@ make run
 
 命令先构建应用，再在后台启动标题为 `Who's Typing` 的原生终端窗口。命令返回后可以继续使用当前终端，应用日志追加到 `output/whos-typing.log`。终端采用用户 Shell，键盘输入直接传给当前会话。
 
+## 管理标签页和分屏
+
+窗口顶部显示标签页和左右滚动标签的按钮。按 `Cmd+T` 新建标签页，按 `Cmd+D` 对当前窗格向右分屏，按 `Cmd+Shift+D` 向下分屏。快捷键由应用处理，不会作为输入发送给终端。拖动分隔线可调整比例，分屏后的窗格可以继续分屏。切换标签页会恢复该页最后选中的存活窗格。
+
+在标签页上点击鼠标右键，可以关闭该标签页或该页最后选中的窗格。终端区域保留原有右键菜单。标签页默认按本次应用的创建顺序命名为 `01`、`02` 等，关闭后不会重排或复用编号。重启应用后编号重新从 `01` 开始。
+
+GUI 创建后会聚焦新会话。关闭窗格只结束该窗格的会话；关闭标签页会结束该页的全部会话。其他会话继续运行。最后一个会话结束后，窗口关闭并退出应用。
+
+新会话使用用户登录 Shell 和用户目录，不复制现有会话的目录修改、环境变量或 SSH 连接。后台标签页继续读取输出并维护各自的控制权计时。新增会话启动失败时，现有会话和布局不变。
+
+## 发现和创建会话
+
+```sh
+./output/whos-typing-cli session list --json
+./output/whos-typing-cli session current --json
+SESSION_ID='将返回的 session_id 填入这里'
+./output/whos-typing-cli tab new --json
+TAB_ID='将返回的 tab_id 填入这里'
+./output/whos-typing-cli tab rename --tab "$TAB_ID" '构建'
+./output/whos-typing-cli --session "$SESSION_ID" session split --direction right --json
+./output/whos-typing-cli --session "$SESSION_ID" session split --direction down --focus --json
+./output/whos-typing-cli --session "$SESSION_ID" session focus
+```
+
+列表返回每个会话的 `session_id`、`tab_id`、`tab_title`、Shell 标题和控制状态，并报告当前会话及 `window_focused`。当前会话是最后选中的终端；窗口失去前台焦点或操作工具栏时保留该选择。处理「这个会话」时，先查询一次当前会话，再用返回的 ID 执行整组操作。
+
+`tab rename` 根据稳定 `tab_id` 重命名，拒绝空白名称。重命名不改变焦点，Shell 设置标题时也不会覆盖标签页名称；名称仅在本次应用运行期间保留。
+
+CLI 创建默认不改变标签页或终端焦点，指定 `--focus` 才聚焦新会话。创建结果返回新 `session_id` 和 `tab_id`。如果创建响应丢失，不要自动重试；先检查会话列表。
+
+只有一个存活会话时可以省略 `--session`。存在多个会话时，执行、读取、控制、接入、分屏和聚焦必须指定会话 ID。未知或已关闭的 ID 不会回退到其他会话。新 CLI 会先在同一连接上确认窗口支持多会话；不兼容时拒绝操作并提示升级窗口。
+
 ## 使用 CLI 执行命令
 
 先启动 GUI，再在另一个终端执行：
@@ -35,7 +67,7 @@ make run
 ./output/whos-typing-cli 'pwd'
 ```
 
-CLI 将一个字符串交给 GUI 当前的 Shell，窗口会显示命令和输出。命令完成后，CLI 输出同一终端会话中的命令结果，并返回命令的退出状态。示例中的第二条 `pwd` 使用前一条命令设置的工作目录。
+CLI 将一个字符串交给绑定的 Shell，窗口会显示命令和输出。命令完成后，CLI 输出同一终端会话中的命令结果，并返回命令的退出状态。示例中的第二条 `pwd` 使用前一条命令设置的工作目录。
 
 当前支持 fish、zsh 和 bash。其他 Shell 仍可在 GUI 使用，但 CLI 会报告不支持。GUI 尚未启动、Shell 正忙、有人工输入尚未提交，或程序无法确认终端空闲时，CLI 会报告原因并以非零状态退出。
 
@@ -47,6 +79,8 @@ CLI 将一个字符串交给 GUI 当前的 Shell，窗口会显示命令和输�
 
 zsh 和 bash 通过 `source` 执行命令，fish 在当前 Shell 中通过 `eval` 执行。依赖脚本上下文的命令可能与直接键入不同；如果 Shell 退出时未发出完成标记，CLI 会报告命令未完成。用户配置移除提示符钩子后，已完成的命令仍返回结果，但后续 CLI 请求可能被拒绝。
 
+多个会话时，在命令前添加 `--session "$SESSION_ID"`。可以用 `--` 结束顶层选项，例如 `./output/whos-typing-cli --session "$SESSION_ID" -- '--help'`。会话刚启动时，如果 Shell 尚未到达空提示符，CLI 会拒绝执行并报告尚未就绪。
+
 ## 切换终端控制权
 
 Agent 控制期间，终端显示蓝色粒子效果，顶部中央的半透明毛玻璃胶囊显示「agent 正在控制」和「接管」。点击「接管」后，人类立即取得输入控制权；已经开始的命令继续运行，可以由人类与前台程序交互或按 Ctrl+C。接管期间，胶囊显示「人类正在控制」和「交还 Agent」；新的 CLI 命令和自动接入输入会被拒绝，`session read` 仍可读取终端内容。
@@ -56,21 +90,21 @@ Agent 控制期间，终端显示蓝色粒子效果，顶部中央的半透明�
 Agent 命令结束后，连续 60 秒没有新命令时，终端自动将控制权交给人类。后台服务是否继续运行不影响计时。自动交还后，下一次 CLI 执行可在终端空闲且没有未提交输入时重新接管。Agent 也可以在命令结束后主动交还：
 
 ```sh
-./output/whos-typing-cli session release
-./output/whos-typing-cli session status
+./output/whos-typing-cli --session "$SESSION_ID" session release
+./output/whos-typing-cli --session "$SESSION_ID" session status
 ```
 
 `session status` 输出 `agent`、`human` 或 `human_takeover`，分别表示 Agent 控制、人类可自动让出控制权、以及人类手动接管。`session status` 和 `session read` 不获取控制权，也不重置空闲计时。远端命令超时或断开后，如果命令是否结束无法确认，程序不会据此自动交还；需要时可手动接管。
 
-## 读取当前会话内容
+## 读取会话内容
 
 启动 GUI 后，在另一个终端执行：
 
 ```sh
-./output/whos-typing-cli session read
+./output/whos-typing-cli --session "$SESSION_ID" session read
 ```
 
-命令返回当前终端屏幕和已保留滚动历史的文本。结果会移除开头和末尾的换行符，最多返回末尾 10000 个 Unicode 字符。中间的换行和空格计入字符数；不足 10000 个字符时返回已有内容。返回的是终端文本快照，不包含颜色等显示样式，也不保证覆盖整个会话历史。
+命令返回绑定会话的终端屏幕和已保留滚动历史的文本。结果会移除开头和末尾的换行符，最多返回末尾 10000 个 Unicode 字符。中间的换行和空格计入字符数；不足 10000 个字符时返回已有内容。返回的是终端文本快照，不包含颜色等显示样式，也不保证覆盖整个会话历史。
 
 末尾连续多行完全相同时，如果合并后的表达更短，会将它们合并为 `内容 (重复 N 行)`，其中 `N` 为原有的总行数。压缩发生在字符截取之前，其他位置的重复内容不受影响。
 
@@ -82,13 +116,13 @@ Agent 命令结束后，连续 60 秒没有新命令时，终端自动将控制�
 
 GUI 通过 SSH 等方式进入远端交互式 Bash 后，可以手动接入当前会话。接入前，确认 GUI 显示的是目标服务器的 Bash 提示符，且没有尚未提交的输入。不要在堡垒机菜单、密码提示或其他交互程序中执行接入命令。
 
-1. 在另一个终端运行 `./output/whos-typing-cli attach --remote --shell bash --auto`，保持该命令运行。
-2. 在 Who's Typing 窗口确认当前终端已登录目标服务器，并停在远端 Bash 的空提示符，然后点击「确认接入」。窗口会自动输入一次性接入命令。
-3. 等待 CLI 显示「远端 Bash 已接入」。随后可在另一个终端运行 `./output/whos-typing-cli 'pwd'` 等命令，命令在已接入的远端 Shell 中执行。
+1. 在另一个终端运行 `./output/whos-typing-cli --session "$SESSION_ID" attach --remote --shell bash --auto`，保持该命令运行。
+2. 在确认框核对会话 ID 和标签页 ID。必要时点击「查看目标」，确认目标服务器的远端 Bash 已停在空提示符，然后点击「确认接入」。窗口会自动输入一次性接入命令。
+3. 等待 CLI 显示「远端 Bash 已接入」。随后可在另一个终端运行 `./output/whos-typing-cli --session "$SESSION_ID" 'pwd'` 等命令，命令在已接入的远端 Shell 中执行。
 
 自动接入等待确认期间，如果终端收到新输出或人工输入，接入会停止，需重新确认当前提示符。取消或连接中断后，若接入命令可能已发送，应先检查远端 Shell 状态。
 
-也可以运行 `./output/whos-typing-cli attach --remote --shell bash` 使用手动方式。CLI 会输出一次性接入命令，由用户将完整命令粘贴到远端 Bash 空提示符并执行。
+也可以运行 `./output/whos-typing-cli --session "$SESSION_ID" attach --remote --shell bash` 使用手动方式。CLI 会输出一次性接入命令，由用户将完整命令粘贴到远端 Bash 空提示符并执行。
 
 每个远端会话需要接入一次。接入命令会在当前远端 Shell 中设置提示符钩子，不修改 Shell 配置文件。当前远端接入仅支持 Bash；需要交互输入的程序仍应在 GUI 中操作。
 
@@ -96,9 +130,9 @@ GUI 通过 SSH 等方式进入远端交互式 Bash 后，可以手动接入当�
 
 发送命令前，确认 GUI 仍处于预期的远端 Shell。程序会对可观察到的断线或菜单输出保守处理，但 SSH 连接发生变化且终端尚无输出时，无法仅凭终端流可靠识别目标；此时命令可能被随后出现的前台程序接收。
 
-远端提示符出现后，如果后台程序继续输出，CLI 可能报告远端状态未知。确认 GUI 仍显示目标服务器的空提示符后，按一次回车，再执行 CLI 命令；也可以重新接入。
+远端提示符出现后，如果后台程序继续输出，或分屏调整终端尺寸导致提示符重绘，CLI 可能报告远端状态未知。确认 GUI 仍显示目标服务器的空提示符；如果 Agent 仍持有控制权，先点击「接管」，或在允许时使用 `session release` 交还控制权。然后按一次回车，再执行 CLI 命令；手动接管后需先点击「交还 Agent」。也可以重新接入。
 
-可以使用 `./output/whos-typing-cli --timeout 30s '命令'` 限制等待时间。CLI 超时或断开时，命令可能仍在远端运行，结果未知。不要直接重试；先在 GUI 确认命令状态，必要时按 Ctrl+C。
+可以使用 `./output/whos-typing-cli --session "$SESSION_ID" --timeout 30s '命令'` 限制等待时间。CLI 超时或断开时，命令可能仍在远端运行，结果未知。不要直接重试；先在 GUI 确认命令状态，必要时按 Ctrl+C。
 
 ## 检查
 
@@ -107,7 +141,8 @@ GOWORK=off go list -m -json github.com/egoist/mygo
 CGO_ENABLED=0 GOWORK=off go build ./...
 GOWORK=off go vet ./...
 GOWORK=off go test ./...
-openspec validate add-native-terminal-mvp --strict
+openspec validate add-multi-session --strict
+openspec validate --specs --strict
 ```
 
 依赖信息中的 `Path` 应为 `github.com/egoist/mygo`，`Version` 应为 `v0.7.4`，不得出现 `Replace`。代码提交前使用 `gofmt` 格式化修改的 Go 文件。
@@ -121,12 +156,12 @@ openspec validate add-native-terminal-mvp --strict
 3. 执行 `cd /tmp` 与 `pwd`。预期目录保持为系统实际解析的临时目录。
 4. 执行 `export WT_MVP=ok` 与 `echo "$WT_MVP"`。预期输出 `ok`。
 5. 执行 `sleep 60`，按 Ctrl+C。预期等待被中断，随后能执行 `echo resumed`。
-6. 执行 `exit`。预期窗口关闭且应用进程结束。
+6. 在仅有一个会话时执行 `exit`。预期窗口关闭且应用进程结束。
 7. 重新启动，记录 Shell PID，再关闭窗口。fish 使用 `echo $fish_pid`，zsh/bash 使用 `echo $$`。预期应用及该 Shell 结束。
 
 ## 退出与启动失败
 
-关闭窗口会结束当前终端会话。Shell 自行退出也会关闭应用；本版没有后台常驻或会话恢复。用户主动脱离会话的后台进程不在应用管理范围内。
+关闭窗口会结束所有终端会话。Shell 自行退出只关闭对应窗格，最后一个会话退出后应用结束；本版没有后台常驻或会话恢复。用户主动脱离会话的后台进程不在应用管理范围内。
 
 若构建失败，查看终端输出。若原生库加载或 Shell 启动失败，应用会向标准错误输出原因并以非零状态退出；使用 `make run` 启动时，查看 `output/whos-typing.log` 以区分依赖下载、动态库加载和 Shell 路径错误。`make run` 返回成功只表示构建完成并发起了后台启动，不表示窗口已成功打开。失败验证应只修改测试进程的环境，不修改用户 Shell 配置。
 
@@ -168,3 +203,13 @@ MYGO_AUTOMATION=/tmp/whos-typing-e2e.sock /tmp/whos-typing-e2e
 同日使用 MyGo v0.7.4 复核毛玻璃胶囊。隔离窗口覆盖浅色和深色终端、粒子背景、前台命令接管与输入、交还失败提示、重新交还及主动释放；2 倍分辨率预览还检查了深浅系统主题和文字垂直位置。交互检查要求测试窗口处于前台，未操作已有会话。
 
 在同一台 macOS arm64 机器上，分别运行旧样式和毛玻璃样式，动画稳定后的 5 次 `ps` CPU 样本中位数为 4.7% 和 6.5%。这是短时观察，不是性能基准；未测量 GPU。全量测试、`internal/app` 竞争检查、`go vet`、构建和 OpenSpec 严格校验通过；测试使用校验过的上游原生库，原生终端与滚动视图测试实际运行。本次未验证物理键盘或真实 SSH，也未重新等待 60 秒自动交还。
+
+2026-11-03 在 macOS arm64、Go 1.27.3 下验证多会话。测试使用临时用户目录、独立 Shell 和仅供 `e2e` 构建使用的独立控制 socket，没有操作已有窗口或 SSH 会话。
+
+- 使用已校验的上游 libghostty-vt 执行全量测试、`internal/app`、`internal/control`、`internal/shell` 的竞态检查和 `go vet`。fish、zsh、bash、原生终端及滚动视图测试实际运行。
+- 在隔离窗口验证标签编号、快捷键创建、嵌套四窗格、背景创建、焦点保持、标签重命名和 Shell 标题隔离。分别检查四个窗格的命令结果及 Agent 控制胶囊，并在真实窗口拖动分隔线；UI 测试核对拖动后的终端尺寸、窄窗格接管和右键关闭。
+- 两个会话分别经过 60 秒空闲交还；其中一个位于隐藏标签页。另验证人工接管不改变其他会话、隐藏标签页持续输出、并发命令输出隔离及超时后的结果未知。远端接入使用本地嵌套 Bash 模拟，分屏后确认原会话保留连接，新窗格使用独立本地 Shell；没有连接真实 SSH。
+- MyGo 自动化路径验证键盘输入、中文文本提交、滚动、未提交输入保护和关闭标签页后的 Shell 回收。独立 UI 测试使用模拟剪贴板和输入法组合事件验证粘贴及跨会话组合输入；没有验证物理键盘、系统剪贴板或系统输入法的实际组合过程。
+- 单会话空闲时的 4 次 CPU 样本为 2.1%、0.1%、3.1%、2.1%；四窗格加隐藏标签页持续输出时为 3.6%、4.1%、5.5%、5.8%。这是本机短时观察，不能作为性能基准；未单独统计重绘次数。
+
+Shell 启动期间，CLI 可能在空提示符准备好前返回「终端尚未就绪」。测试中曾有两次 zsh 会话在等待 8 秒后仍返回该错误，原因未确认；随后独立 Shell 重复 5 次、隔离 GUI 连续启动 19 次均未复现，不能据此认定问题已经解决。

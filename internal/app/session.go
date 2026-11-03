@@ -26,6 +26,7 @@ type session struct {
 	window    terminalWindow
 	closed    bool
 	err       error
+	exit      func(int)
 }
 
 func newSession() *session {
@@ -74,9 +75,13 @@ func (s *session) onExit(code int) {
 			}
 			s.err = fmt.Errorf("启动 Shell 失败: %s", reason)
 		}
-		win := s.window
+		win, callback := s.window, s.exit
 		s.mu.Unlock()
-		win.Close()
+		if callback != nil {
+			callback(code)
+		} else if win != nil {
+			win.Close()
+		}
 	}()
 }
 
@@ -104,4 +109,19 @@ func (s *session) error() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.err
+}
+
+// isDone 在提交布局前检查终端是否已经结束。
+func (s *session) isDone() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed || s.terminal == nil {
+		return true
+	}
+	select {
+	case <-s.terminal.Done():
+		return true
+	default:
+		return false
+	}
 }

@@ -95,3 +95,26 @@ func TestAttachConfirmationCancellationBeforeWindowUpdate(t *testing.T) {
 		t.Fatal("延迟执行的窗口更新不应重新打开确认框")
 	}
 }
+
+func TestAttachConfirmationShowsAndViewsTarget(t *testing.T) {
+	result := make(chan bool, 1)
+	var viewed string
+	prompt := &attachConfirmation{open: true, pending: result, sessionID: "session-a", tabID: "tab-a", focus: func(id string) { viewed = id }}
+	tester := ui.NewTester(func(c *ui.Context) { prompt.view(c) }, 800, 480)
+	tester.Frame()
+	if !tester.HasText("会话: session-a") || !tester.HasText("标签页: tab-a") {
+		t.Fatalf("确认框缺少目标: %v", tester.Texts())
+	}
+	if err := tester.Click("查看目标"); err != nil {
+		t.Fatal(err)
+	}
+	if viewed != "session-a" || !prompt.open || prompt.pending == nil {
+		t.Fatalf("查看目标后确认状态错误: %q %+v", viewed, prompt)
+	}
+	if err := tester.Click("取消"); err != nil {
+		t.Fatal(err)
+	}
+	if <-result {
+		t.Fatal("取消后不应确认")
+	}
+}

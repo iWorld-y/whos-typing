@@ -18,19 +18,29 @@ import (
 )
 
 type request struct {
-	Command string `json:"command"`
-	Action  string `json:"action,omitempty"`
-	Shell   string `json:"shell,omitempty"`
-	Timeout int64  `json:"timeout,omitempty"`
+	Command   string `json:"command"`
+	Action    string `json:"action,omitempty"`
+	Shell     string `json:"shell,omitempty"`
+	Timeout   int64  `json:"timeout,omitempty"`
+	SessionID string `json:"session_id,omitempty"`
+	TabID     string `json:"tab_id,omitempty"`
+	Title     string `json:"title,omitempty"`
+	Direction string `json:"direction,omitempty"`
+	Focus     bool   `json:"focus,omitempty"`
 }
 
 type response struct {
-	ExitCode int    `json:"exit_code"`
-	Error    string `json:"error,omitempty"`
-	Size     int64  `json:"size"`
-	Phase    string `json:"phase,omitempty"`
-	Script   string `json:"script,omitempty"`
-	Control  string `json:"control,omitempty"`
+	ExitCode     int             `json:"exit_code"`
+	Error        string          `json:"error,omitempty"`
+	Size         int64           `json:"size"`
+	Phase        string          `json:"phase,omitempty"`
+	Script       string          `json:"script,omitempty"`
+	Control      string          `json:"control,omitempty"`
+	Version      int             `json:"version,omitempty"`
+	MultiSession bool            `json:"multi_session,omitempty"`
+	List         *SessionList    `json:"list,omitempty"`
+	Current      *CurrentSession `json:"current,omitempty"`
+	Created      *CreatedSession `json:"created,omitempty"`
 }
 
 // Result 包含终端原始输出、退出码及无法完成时的错误。
@@ -78,6 +88,9 @@ type Server struct {
 }
 
 func directory() string {
+	if dir := testDirectory(); dir != "" {
+		return dir
+	}
 	return filepath.Join("/tmp", "whos-typing-"+strconv.Itoa(os.Geteuid()))
 }
 
@@ -180,6 +193,83 @@ func handle(conn *net.UnixConn, executor Executor) {
 		_ = json.NewEncoder(conn).Encode(response{Error: "终端未启动"})
 		return
 	}
+	workspace, hasWorkspace := executor.(Workspace)
+	if req.Action == "hello" {
+		if !hasWorkspace {
+			_ = json.NewEncoder(conn).Encode(response{Error: "窗口不支持多会话"})
+			return
+		}
+		if err := json.NewEncoder(conn).Encode(response{Version: protocolVersion, MultiSession: true}); err != nil {
+			return
+		}
+		_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+		line, err = r.ReadBytes('\n')
+		_ = conn.SetReadDeadline(time.Time{})
+		req = request{}
+		if err != nil || json.Unmarshal(line, &req) != nil {
+			_ = json.NewEncoder(conn).Encode(response{Error: "命令请求格式错误"})
+			return
+		}
+	} else if req.SessionID != "" {
+		_ = json.NewEncoder(conn).Encode(response{Error: "请先确认多会话协议"})
+		return
+	}
+	if hasWorkspace {
+		reply := response{}
+		switch req.Action {
+		case "session.list":
+			list, err := workspace.ListSessions()
+			if err != nil {
+				reply.Error = err.Error()
+			} else {
+				reply.List = &list
+			}
+		case "session.current":
+			current, err := workspace.CurrentSession()
+			if err != nil {
+				reply.Error = err.Error()
+			} else {
+				reply.Current = &current
+			}
+		case "tab.rename":
+			if err := workspace.RenameTab(req.TabID, req.Title); err != nil {
+				reply.Error = err.Error()
+			}
+		case "tab.new":
+			created, err := workspace.NewTab(req.Focus)
+			if err != nil {
+				reply.Error = err.Error()
+			} else {
+				reply.Created = &created
+			}
+		default:
+			id, target, err := workspace.ResolveSession(req.SessionID)
+			if err != nil {
+				reply.Error = err.Error()
+				_ = json.NewEncoder(conn).Encode(reply)
+				return
+			}
+			switch req.Action {
+			case "session.split":
+				created, err := workspace.SplitSession(id, req.Direction, req.Focus)
+				if err != nil {
+					reply.Error = err.Error()
+				} else {
+					reply.Created = &created
+				}
+			case "session.focus":
+				if err := workspace.FocusSession(id); err != nil {
+					reply.Error = err.Error()
+				}
+			default:
+				executor = target
+				goto bound
+			}
+		}
+		_ = json.NewEncoder(conn).Encode(reply)
+		return
+	}
+bound:
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go func() {

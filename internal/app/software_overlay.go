@@ -10,7 +10,7 @@ import (
 // drawSoftwareOverlay 避免逐像素执行着色器，同时保留控制状态提示。
 func drawSoftwareOverlay(p *ui.Painter, r ui.Rect, opacity float32, elapsed float64, pointerX, pointerY float32, pointerAge float64) {
 	p.Fill(r, ui.RGBA(138, 153, 184, 0.05*opacity), 0)
-	width := min(max(min(r.W, r.H)*0.18, 70), 130)
+	width := min(min(r.W, r.H)/2, min(max(min(r.W, r.H)*0.18, 70), 130))
 	strength := float32(0.25+0.08*math.Sin(elapsed*0.7)) * opacity
 	blue, clear := ui.RGBA(46, 122, 250, strength), ui.RGBA(46, 122, 250, 0)
 	p.FillGradient(ui.Rect{X: r.X, Y: r.Y, W: r.W, H: width}, ui.LinearGradient{From: blue, To: clear, Angle: 180}, 0)

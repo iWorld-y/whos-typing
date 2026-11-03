@@ -4,30 +4,43 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/egoist/mygo/ui"
 )
 
 type attachConfirmation struct {
-	update  func(func())
-	open    bool
-	pending chan bool
+	update    func(func())
+	open      bool
+	pending   chan bool
+	sessionID string
+	tabID     string
+	focus     func(string)
 }
 
 func (c controller) AttachAuto(ctx context.Context, shellName string, notify func() error) error {
 	if c.confirmation == nil {
 		return errors.New("窗口不支持远端接入确认")
 	}
+	if c.pane == nil || c.pane.ctx == nil {
+		return errors.New("目标会话不可用")
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	stop := context.AfterFunc(c.pane.ctx, cancel)
+	defer stop()
 	return c.Session.AttachAuto(ctx, shellName, func(ctx context.Context) error {
 		if err := notify(); err != nil {
 			return err
 		}
-		return c.confirmation.ask(ctx)
+		return c.confirmation.askTarget(ctx, c.pane.id, c.pane.tabID)
 	})
 }
 
 // ask 等待用户确认或请求取消；界面状态只在窗口线程中修改。
-func (a *attachConfirmation) ask(ctx context.Context) error {
+func (a *attachConfirmation) ask(ctx context.Context) error { return a.askTarget(ctx, "", "") }
+
+func (a *attachConfirmation) askTarget(ctx context.Context, sessionID, tabID string) error {
 	result := make(chan bool, 1)
 	a.update(func() {
 		if ctx.Err() != nil {
@@ -38,6 +51,7 @@ func (a *attachConfirmation) ask(ctx context.Context) error {
 			return
 		}
 		a.pending = result
+		a.sessionID, a.tabID = sessionID, tabID
 		a.open = true
 	})
 	defer a.update(func() {
@@ -61,13 +75,28 @@ func (a *attachConfirmation) view(c *ui.Context) {
 	if !a.open {
 		return
 	}
-	choice := ui.AlertDialog(c, &a.open, "确认远端接入",
-		"请确认当前终端已登录目标服务器，并停在远端 Bash 的空提示符。确认后，程序将自动输入接入命令。",
-		"确认接入", "取消")
+	message := "请确认目标终端已登录目标服务器，并停在远端 Bash 的空提示符。确认后，程序将自动输入接入命令。"
+	if a.sessionID != "" {
+		message += fmt.Sprintf("\n会话: %s\n标签页: %s", a.sessionID, a.tabID)
+	}
+	buttons := []string{"确认接入", "取消"}
+	if a.sessionID != "" {
+		buttons = []string{"确认接入", "查看目标", "取消"}
+	}
+	choice := ui.AlertDialog(c, &a.open, "确认远端接入", message, buttons...)
 	switch choice {
 	case 0:
 		a.respond(true)
-	case 1, ui.AlertDismissed:
+	case 1:
+		if a.sessionID != "" {
+			a.open = true
+			if a.focus != nil {
+				a.focus(a.sessionID)
+			}
+		} else {
+			a.respond(false)
+		}
+	case 2, ui.AlertDismissed:
 		a.respond(false)
 	}
 }
