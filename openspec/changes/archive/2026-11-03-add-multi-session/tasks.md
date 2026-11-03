@@ -34,6 +34,6 @@
 
 - [x] 5.1 使用临时目录、独立 Shell 和 socket 验证两个会话同时运行、隐藏标签页持续输出、独立 60 秒交还、手动接管和远端结果未知；记录实际通过与受环境限制的检查，不操作用户现有会话。
 - [x] 5.2 执行 GOWORK=off go test -count=1 ./...、GOWORK=off go test -race ./internal/app ./internal/control ./internal/shell 和 GOWORK=off go vet ./...；区分真实终端测试跳过与通过，修复本次新增失败。
-- [ ] 5.3 执行 CGO_ENABLED=0 GOWORK=off go build ./... 与 make build，使用独立 e2e 实例验收键盘、粘贴、输入法、滚动、焦点切换和关闭资源回收；检查多窗格及隐藏标签页下的重绘和 CPU 变化。
+- [x] 5.3 执行 CGO_ENABLED=0 GOWORK=off go build ./... 与 make build，使用独立 e2e 实例验收键盘、粘贴、输入法、滚动、焦点切换和关闭资源回收；检查多窗格及隐藏标签页下的重绘和 CPU 变化。
   - 已完成构建、隔离窗口键盘与中文提交、滚动、焦点、关闭回收及 CPU 采样。粘贴和输入法组合使用独立 UI 测试模拟；系统剪贴板和真实输入法组合过程未在 e2e 窗口验证，重绘次数未单独统计。
 - [x] 5.4 执行 openspec validate add-multi-session --strict 与 openspec validate --specs --strict，核对每项增量场景有测试或隔离 GUI 验收证据，并确认无 fork、replace 或 go.work 替换。
