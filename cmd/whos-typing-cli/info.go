@@ -15,6 +15,8 @@ const usage = `用法: whos-typing-cli [--session ID] [--timeout 时间] [--] '�
       whos-typing-cli tab new [--focus] [--json]
       whos-typing-cli tab rename --tab ID '标题'
       whos-typing-cli [--session ID] session split --direction {right|down} [--focus] [--json]
+      whos-typing-cli ssh [--config 文件] {connect|status|disconnect} TARGET
+      whos-typing-cli ssh [--config 文件] run TARGET '命令'
       whos-typing-cli --help
       whos-typing-cli --version
 

@@ -12,6 +12,9 @@ import (
 func printJSON(out io.Writer, value any) error { return json.NewEncoder(out).Encode(value) }
 
 func run(args []string, out, errOut io.Writer) int {
+	if len(args) > 0 && args[0] == "ssh" {
+		return runSSH(args[1:], out, errOut)
+	}
 	if handleLocalOption(args, out) {
 		return 0
 	}
