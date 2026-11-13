@@ -386,3 +386,17 @@ func TestAutomaticRemoteAttachInterruptReportsUnknownResult(t *testing.T) {
 		t.Fatal("Ctrl+C 后未结束接入等待")
 	}
 }
+
+func TestAutomaticApprovalCannotBypassHumanTakeover(t *testing.T) {
+	f := remoteFixture(t)
+	attachFixture(t, f)
+	if _, _, err := f.run(t, "printf ready"); err != nil {
+		t.Fatal(err)
+	}
+	f.s.TakeOver()
+	called := false
+	err := f.s.AttachAuto(context.Background(), "bash", func(context.Context) error { called = true; return nil })
+	if err == nil || called {
+		t.Fatalf("人类接管期间仍执行自动审批: err=%v called=%v", err, called)
+	}
+}

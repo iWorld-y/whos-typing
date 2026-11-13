@@ -36,6 +36,7 @@ type response struct {
 	Phase        string          `json:"phase,omitempty"`
 	Script       string          `json:"script,omitempty"`
 	Control      string          `json:"control,omitempty"`
+	Diagnostic   *Diagnostic     `json:"diagnostic,omitempty"`
 	Version      int             `json:"version,omitempty"`
 	MultiSession bool            `json:"multi_session,omitempty"`
 	List         *SessionList    `json:"list,omitempty"`
@@ -75,6 +76,17 @@ type ControlManager interface {
 	ControlStatus() string
 	ReleaseControl() error
 }
+
+// Diagnostic 描述只读终端状态，Available 为 false 表示旧窗口未提供诊断。
+type Diagnostic struct {
+	Control         string `json:"control"`
+	Remote          string `json:"remote"`
+	Unknown         bool   `json:"unknown_result"`
+	SuggestedAction string `json:"suggested_action"`
+	Available       bool   `json:"diagnostics_available"`
+}
+
+type diagnosticProvider interface{ SessionDiagnostic() Diagnostic }
 
 // Server 管理当前用户的 Unix socket 和相关连接。
 type Server struct {
@@ -293,6 +305,11 @@ bound:
 			}
 		} else {
 			reply.Control = manager.ControlStatus()
+			if provider, ok := executor.(diagnosticProvider); ok {
+				d := provider.SessionDiagnostic()
+				reply.Control = d.Control
+				reply.Diagnostic = &d
+			}
 		}
 		_ = json.NewEncoder(conn).Encode(reply)
 		return

@@ -35,6 +35,7 @@ type request struct {
 	capture            []byte
 	prefix             []byte
 	remote             bool
+	remoteBinding      *remoteSession
 	humanBefore        bool // 排队前由人类控制，屏障之前的输入仍须处理。
 	inject             []byte
 	injecting          bool
@@ -61,35 +62,36 @@ type Session struct {
 	exited       chan struct{}
 	exitCode     int
 
-	mu           sync.Mutex
-	writeMu      sync.Mutex
-	send         func([]byte)
-	onState      func(bool)
-	owner        ControlOwner
-	onControl    func(ControlOwner)
-	titleContext TitleContext
-	localTitle   *TitleContext
-	onTitle      func()
-	idleStarted  time.Time
-	idleVersion  uint64
-	idleCancel   func()
-	idleNow      func() time.Time
-	idleAfter    func(time.Duration, func()) func()
-	initial      bool
-	ready        bool
-	dirty        bool
-	pending      int
-	keys         uint64
-	submitted    uint64
-	queued       *request
-	active       *request
-	localOrphan  *request
-	unconfirmed  map[*request]struct{}
-	inputBlocked bool
-	remote       *remoteSession
-	retired      []*remoteSession
-	closed       bool
-	closeOnce    sync.Once
+	mu             sync.Mutex
+	writeMu        sync.Mutex
+	send           func([]byte)
+	onState        func(bool)
+	owner          ControlOwner
+	onControl      func(ControlOwner)
+	titleContext   TitleContext
+	localTitle     *TitleContext
+	onTitle        func()
+	idleStarted    time.Time
+	idleVersion    uint64
+	idleCancel     func()
+	idleNow        func() time.Time
+	idleAfter      func(time.Duration, func()) func()
+	initial        bool
+	ready          bool
+	dirty          bool
+	pending        int
+	keys           uint64
+	submitted      uint64
+	queued         *request
+	active         *request
+	localOrphan    *request
+	unconfirmed    map[*request]struct{}
+	unknownHistory bool
+	inputBlocked   bool
+	remote         *remoteSession
+	retired        []*remoteSession
+	closed         bool
+	closeOnce      sync.Once
 }
 
 // New 启动用户登录 Shell；dir 用于存放本次会话的临时文件。

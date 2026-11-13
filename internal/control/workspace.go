@@ -260,6 +260,26 @@ func ControlSession(id, action string, out io.Writer) error {
 	return nil
 }
 
+// StatusSessionJSON 返回诊断状态，兼容未提供诊断的旧窗口。
+func StatusSessionJSON(id string, out io.Writer) error {
+	return statusSessionJSON(socketPath(directory()), id, out)
+}
+func statusSessionJSON(path, id string, out io.Writer) error {
+	r, err := workspaceCall(path, request{Action: "session.status", SessionID: id})
+	if err != nil {
+		return err
+	}
+	switch r.Control {
+	case "human", "agent", "human_takeover":
+	default:
+		return errors.New("终端控制权响应格式错误")
+	}
+	if r.Diagnostic == nil {
+		return json.NewEncoder(out).Encode(map[string]any{"control": r.Control, "diagnostics_available": false, "message": "当前窗口版本未提供诊断信息"})
+	}
+	return json.NewEncoder(out).Encode(r.Diagnostic)
+}
+
 // AttachSession 将远端接入绑定到指定会话。
 func AttachSession(id, shellName string, auto bool, out io.Writer) error {
 	return attachSession(socketPath(directory()), id, shellName, auto, out)

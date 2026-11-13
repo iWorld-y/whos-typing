@@ -141,6 +141,7 @@ func TestTakeOverCancelsBlockedRemoteWrite(t *testing.T) {
 	defer output.Close()
 	r := &request{remote: true, output: output, done: make(chan struct{})}
 	s := &Session{pty: writer, token: "test", owner: ControlAgent, remote: &remoteSession{}, active: r}
+	r.remoteBinding = s.remote
 	prefix := "\x00WT-INJECT:test:" + filepath.Base(output.Name()) + ":"
 	r.inject = []byte(prefix + strings.Repeat("x", 1<<20))
 	done := make(chan error, 1)
@@ -318,6 +319,46 @@ func TestReturnControlAfterHumanForegroundShell(t *testing.T) {
 			}
 			if output, _, err := f.run(t, "printf resumed"); err != nil || output != "resumed" {
 				t.Fatalf("退出子 Shell 后 CLI 无法执行: %q %v", output, err)
+			}
+		})
+	}
+}
+
+func TestReleaseControlErrorMatchesLocalAndRemoteState(t *testing.T) {
+	local := &Session{owner: ControlAgent, active: &request{}}
+	if err := local.ReleaseControl(); err == nil || strings.Contains(err.Error(), "远端") {
+		t.Fatalf("本地命令错误提示: %v", err)
+	}
+	remote := &Session{owner: ControlAgent, remote: &remoteSession{orphan: &request{}}}
+	if err := remote.ReleaseControl(); err == nil || !strings.Contains(err.Error(), "恢复远端接入") {
+		t.Fatalf("远端未知提示: %v", err)
+	}
+}
+
+func TestRemoteDiagnosticAndReleaseStates(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		setup   func(*Session, *remoteSession)
+		unknown bool
+		action  string
+		release string
+	}{
+		{"active", func(s *Session, r *remoteSession) { s.active = &request{remote: true, remoteBinding: r} }, false, "等待", "等待"},
+		{"finished_orphan", func(s *Session, r *remoteSession) {
+			r.orphan = &request{remote: true, remoteBinding: r, finished: true}
+		}, false, "恢复远端接入", "恢复远端接入"},
+		{"unknown", func(s *Session, r *remoteSession) { r.orphan = &request{remote: true, remoteBinding: r} }, true, "恢复远端接入", "恢复远端接入"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := &remoteSession{}
+			s := &Session{owner: ControlAgent, remote: r}
+			tc.setup(s, r)
+			got := s.SessionDiagnostic()
+			if got.Unknown != tc.unknown || !strings.Contains(got.SuggestedAction, tc.action) {
+				t.Fatalf("诊断: %+v", got)
+			}
+			if err := s.ReleaseControl(); err == nil || !strings.Contains(err.Error(), tc.release) {
+				t.Fatalf("交还提示: %v", err)
 			}
 		})
 	}

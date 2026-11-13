@@ -68,8 +68,14 @@ func parseArgs(args []string) (options, error) {
 		o.action = "session." + args[1]
 		args = args[2:]
 		switch o.action {
-		case "session.read", "session.status", "session.release", "session.focus":
+		case "session.read", "session.release", "session.focus":
 			if len(args) != 0 {
+				return o, errors.New(usage)
+			}
+		case "session.status":
+			if len(args) == 1 && args[0] == "--json" {
+				o.json = true
+			} else if len(args) != 0 {
 				return o, errors.New(usage)
 			}
 		case "session.list", "session.current":

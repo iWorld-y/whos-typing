@@ -128,8 +128,12 @@ func (v *controlView) controlBar(c *ui.Context, width float32) {
 				}
 			}
 		})
-		if v.owner == shell.ControlHumanTakeover && v.recoverable && v.recoverRemote != nil && !v.recovering {
-			if ui.Button(c.Key("recover-remote"), "重新接入").KeepFocus().Clicked() {
+		showRecovery := v.recoverable
+		if status, ok := v.control.(interface{ CanShowRemoteRecovery() bool }); ok && status.CanShowRemoteRecovery() {
+			showRecovery = true
+		}
+		if v.owner == shell.ControlHumanTakeover && showRecovery && v.recoverRemote != nil && !v.recovering {
+			if ui.Button(c.Key("recover-remote"), "恢复远端接入").KeepFocus().Clicked() {
 				v.recoverRemote()
 			}
 		}

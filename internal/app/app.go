@@ -15,6 +15,7 @@ import (
 	"github.com/egoist/mygo/ui"
 
 	"whos-typing/internal/control"
+	"whos-typing/internal/settings"
 	"whos-typing/internal/shell"
 )
 
@@ -62,6 +63,7 @@ func Run() error {
 	if err != nil {
 		return err
 	}
+	prefs, prefsErr := settings.Load(filepath.Join(configDir, "whos-typing"))
 	var startup appError
 	var ws *workspace
 	mygo.App.WhenReady(func() {
@@ -70,7 +72,8 @@ func Run() error {
 			mygo.App.Quit()
 			return
 		}
-		confirmation := &attachConfirmation{}
+		confirmation := &attachConfirmation{autoAttach: prefs.AutoAttach}
+		settingsWindow := &settingsView{store: prefs}
 		var view workspaceView
 		win := mygo.NewWindow(mygo.WindowOptions{Title: "Who's Typing", Width: 760, Height: 480, Hidden: true, TitleBarStyle: mygo.TitleBarHidden,
 			Content: ui.View(func(c *ui.Context) { view.view(c); confirmation.view(c) }),
@@ -79,6 +82,10 @@ func Run() error {
 			return makePane(server.Dir(), win, confirmation, ws, id, onExit)
 		})
 		view.workspace = ws
+		view.openSettings = settingsWindow.open
+		if prefsErr != nil {
+			view.message = prefsErr.Error()
+		}
 		view.update = win.Update
 		confirmation.update = win.Update
 		confirmation.focus = func(id string) { _ = ws.FocusSession(id) }

@@ -640,12 +640,76 @@ func TestRemotePromptSuffixControlAcrossReads(t *testing.T) {
 	}
 }
 
+func TestRemoteExitPreservesTrapStatusAndIgnoresSubshell(t *testing.T) {
+	f := remoteFixture(t)
+	if _, err := f.s.Write([]byte("PS1='WT_TRAP_INNER> ' /bin/bash --noprofile --norc -i\r")); err != nil {
+		t.Fatal(err)
+	}
+	waitText(t, f, "WT_TRAP_INNER>")
+	if _, err := f.s.Write([]byte("trap 'printf \"WT_OLD_EXIT:%s\\n\" \"$?\"' EXIT; printf WT_TRAP_READY\r")); err != nil {
+		t.Fatal(err)
+	}
+	waitText(t, f, "WT_TRAP_READY")
+	attachFixture(t, f)
+	if output, code, err := f.run(t, "(exit 7); printf alive"); err != nil || code != 0 || !strings.Contains(output, "alive") {
+		t.Fatalf("子 Shell 退出影响接入: %q %d %v", output, code, err)
+	}
+	if _, code, err := f.run(t, "set -e"); err != nil || code != 0 {
+		t.Fatalf("设置 errexit 失败: %d %v", code, err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	result := f.s.Execute(ctx, "false")
+	if result.Output != nil {
+		defer os.Remove(result.Output.Name())
+		defer result.Output.Close()
+	}
+	if result.Err == nil || !strings.Contains(result.Err.Error(), "结果未知") {
+		t.Fatalf("未报告结果未知: %v", result.Err)
+	}
+	waitText(t, f, "WT_OLD_EXIT:1")
+}
+
+func TestRemoteNestedBashErrexitReportsUnknown(t *testing.T) {
+	f := remoteFixture(t)
+	if _, err := f.s.Write([]byte("PS1='WT_INNER> ' /bin/bash --noprofile --norc -i\r")); err != nil {
+		t.Fatal(err)
+	}
+	waitText(t, f, "WT_INNER>")
+	attachFixture(t, f)
+	if _, code, err := f.run(t, "set -e"); err != nil || code != 0 {
+		t.Fatalf("设置 errexit 失败: %d %v", code, err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	start := time.Now()
+	result := f.s.Execute(ctx, "false")
+	if result.Output != nil {
+		defer os.Remove(result.Output.Name())
+		defer result.Output.Close()
+	}
+	if result.Err == nil || !strings.Contains(result.Err.Error(), "结果未知") || time.Since(start) >= 2*time.Second {
+		t.Fatalf("内层退出未及时报告结果未知: %v，耗时 %v", result.Err, time.Since(start))
+	}
+	waitText(t, f, "WT_REMOTE_PROMPT>")
+}
+
 func TestRemoteExitReportsIncompleteAndRestoresLocal(t *testing.T) {
 	f := remoteFixture(t)
 	attachFixture(t, f)
 	output, _, err := f.run(t, "printf before; exit 0")
 	if err == nil || !strings.HasPrefix(output, "before") {
 		t.Fatalf("远端退出后结果错误: %q %v", output, err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		f.s.mu.Lock()
+		local := f.s.remote == nil && f.s.ready
+		f.s.mu.Unlock()
+		if local {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 	if output, code, err := f.run(t, "printf local"); err != nil || code != 0 || output != "local" {
 		t.Fatalf("远端退出后本地终端未恢复: %q %d %v", output, code, err)
@@ -700,6 +764,10 @@ func TestRemoteRemovedPromptHookDoesNotHang(t *testing.T) {
 	output, code, err := f.run(t, "unset PROMPT_COMMAND")
 	if err != nil || code != 0 || output != "" || time.Since(start) > 4*time.Second {
 		t.Fatalf("移除远端提示符钩子后没有返回已完成命令: %q %d %v", output, code, err)
+	}
+	diagnostic := f.s.SessionDiagnostic()
+	if diagnostic.Unknown || !strings.Contains(diagnostic.SuggestedAction, "恢复远端接入") {
+		t.Fatalf("已完成但缺少提示符的诊断错误: %+v", diagnostic)
 	}
 	if _, _, err := f.run(t, "printf wrong"); err == nil {
 		t.Fatal("远端提示符状态未知时接受了新的命令")
@@ -800,7 +868,7 @@ func TestRemoteMarkerSplitAcrossReads(t *testing.T) {
 	}
 	defer output.Close()
 	remote := &remoteSession{marker: []byte("\x1eWT:remote:")}
-	request := &request{output: output, done: make(chan struct{}), remote: true}
+	request := &request{output: output, done: make(chan struct{}), remote: true, remoteBinding: remote}
 	s := &Session{initSeen: true, initial: true, marker: []byte("\x1eWT:local:"), remote: remote, active: request}
 	input := []byte("hidden\x1eWT:remote:S\x1ffirst\x00second\x1eWT:remote:E:7\x1f\x1eWT:remote:C:1\x1f\x1eWT:remote:P:1\x1ftail")
 	for _, b := range input {
@@ -817,4 +885,38 @@ func TestRemoteMarkerSplitAcrossReads(t *testing.T) {
 	if err != nil || string(data) != "first\x00second" || request.result.ExitCode != 7 {
 		t.Fatalf("拆分标记输出错误: %q，退出码 %d，错误 %v", data, request.result.ExitCode, err)
 	}
+}
+
+func TestRemoteExitPreservesTrapArgumentsAndVariables(t *testing.T) {
+	f := remoteFixture(t)
+	if _, err := f.s.Write([]byte("WT_OUTER_STATE=outer; PS1='WT_ARGS> ' /bin/bash --noprofile --norc -i\r")); err != nil {
+		t.Fatal(err)
+	}
+	waitText(t, f, "WT_ARGS>")
+	if _, err := f.s.Write([]byte(`set -- original; s=original_var; trap 'printf "WT_TRAP_RESULT:%s:%s:%s:%s\n" "$#" "$1" "$s" "$?"' EXIT; printf WT_TRAP_SET` + "\r")); err != nil {
+		t.Fatal(err)
+	}
+	waitText(t, f, "WT_TRAP_SET")
+	attachFixture(t, f)
+	if _, _, err := f.run(t, "exit 7"); err == nil {
+		t.Fatal("退出应报告未知")
+	}
+	waitText(t, f, "WT_TRAP_RESULT:1:original:original_var:7")
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		screen := f.screen()
+		pos := strings.LastIndex(screen, "WT_TRAP_RESULT:1:original:original_var:7")
+		if pos >= 0 && strings.Contains(screen[pos:], "WT_REMOTE_PROMPT>") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("外层 Bash 未返回提示符")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	f.s.TakeOver()
+	if _, err := f.s.Write([]byte("printf 'WT_OUTER_%s' \"$WT_OUTER_STATE\"\r")); err != nil {
+		t.Fatal(err)
+	}
+	waitText(t, f, "WT_OUTER_outer")
 }

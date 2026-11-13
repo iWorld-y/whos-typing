@@ -4,6 +4,8 @@ package shell
 import (
 	"errors"
 	"time"
+
+	"whos-typing/internal/control"
 )
 
 // ControlOwner 表示当前终端输入由谁控制。
@@ -79,7 +81,7 @@ func (s *Session) TakeOver() {
 		}
 		if r := s.active; r != nil && r.remote && len(r.inject) != 0 && !r.injecting {
 			s.active = nil
-			s.remote.ready = false
+			r.remoteBinding.ready = false
 			r.inject = nil
 			s.state(false)
 			s.finish(r, 1, errors.New("终端已由人类接管，远端命令未发送"))
@@ -118,7 +120,7 @@ func (s *Session) ReturnControl() error {
 	if r := s.remote; r != nil {
 		ready = !r.attaching && r.ready && len(r.idleOutput) == 0 && !r.dirty && r.pending == 0 && r.orphan == nil
 	}
-	if !ready || s.queued != nil || s.active != nil {
+	if !ready || s.queued != nil || s.active != nil || len(s.unconfirmed) != 0 {
 		if s.remote != nil && s.canRecoverRemote() == nil {
 			return ErrRemoteNotReady
 		}
@@ -139,8 +141,13 @@ func (s *Session) ReleaseControl() error {
 	if s.owner == ControlHumanTakeover {
 		return errors.New("终端已由人类接管，请等待交还 Agent")
 	}
-	if s.queued != nil || s.active != nil || len(s.unconfirmed) != 0 || (s.remote != nil && (s.remote.attaching || s.remote.orphan != nil)) {
-		return errors.New("命令仍在执行或状态未知，无法主动交还")
+	unknown := len(s.unconfirmed) != 0 || (s.remote != nil && s.remote.orphan != nil && !s.remote.orphan.finished)
+	busy := s.queued != nil || s.active != nil
+	if s.remote != nil && (unknown || (!busy && !s.remote.ready && !s.remote.attaching)) {
+		return errors.New("远端状态未同步或结果未知，请接管后使用恢复远端接入")
+	}
+	if s.queued != nil || s.active != nil || len(s.unconfirmed) != 0 || (s.remote != nil && s.remote.attaching) {
+		return errors.New("命令仍在执行或状态未知，请等待终端空闲后再交还")
 	}
 	s.stopIdle()
 	s.setControl(ControlHuman)
@@ -239,4 +246,42 @@ func (s *Session) humanForegroundInput() bool {
 	}
 	group, err := s.foregroundGroup()
 	return err == nil && group > 1 && group != s.command.Process.Pid
+}
+
+// SessionDiagnostic 返回只读控制和远端接入状态。
+func (s *Session) SessionDiagnostic() control.Diagnostic {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	owner := "human"
+	if s.owner == ControlAgent {
+		owner = "agent"
+	} else if s.owner == ControlHumanTakeover {
+		owner = "human_takeover"
+	}
+	state := "none"
+	if s.remote != nil {
+		state = "not_ready"
+		if s.remote.attaching {
+			state = "attaching"
+		} else if s.remote.ready {
+			state = "ready"
+		}
+	}
+	currentUnknown := len(s.unconfirmed) != 0 || (s.remote != nil && s.remote.orphan != nil && !s.remote.orphan.finished)
+	unknown := s.unknownHistory || currentUnknown
+	action := "none"
+	busy := s.queued != nil || s.active != nil
+	if s.remote != nil && (currentUnknown || (!busy && !s.remote.ready && !s.remote.attaching)) {
+		action = "接管终端并使用恢复远端接入"
+	} else if busy {
+		action = "等待当前命令完成"
+	}
+	return control.Diagnostic{Control: owner, Remote: state, Unknown: unknown, SuggestedAction: action, Available: true}
+}
+
+// CanShowRemoteRecovery 表示人类接管后可以申请恢复远端目标。
+func (s *Session) CanShowRemoteRecovery() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return !s.closed && s.owner == ControlHumanTakeover && s.remote != nil && !s.remote.attaching
 }

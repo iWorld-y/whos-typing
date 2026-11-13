@@ -10,7 +10,8 @@ import (
 
 const usage = `用法: whos-typing-cli [--session ID] [--timeout 时间] [--] '命令'
       whos-typing-cli [--session ID] attach --remote --shell bash [--auto]
-      whos-typing-cli [--session ID] session {read|status|release|focus}
+      whos-typing-cli [--session ID] session {read|release|focus}
+      whos-typing-cli [--session ID] session status [--json]
       whos-typing-cli session {list|current} [--json]
       whos-typing-cli tab new [--focus] [--json]
       whos-typing-cli tab rename --tab ID '标题'

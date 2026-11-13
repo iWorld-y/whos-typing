@@ -30,7 +30,11 @@ func run(args []string, out, errOut io.Writer) int {
 	case "session.read":
 		err = control.ReadSessionFor(o.session, out)
 	case "session.status", "session.release":
-		err = control.ControlSession(o.session, o.action, out)
+		if o.action == "session.status" && o.json {
+			err = control.StatusSessionJSON(o.session, out)
+		} else {
+			err = control.ControlSession(o.session, o.action, out)
+		}
 		if err == nil && o.action == "session.release" {
 			_, err = fmt.Fprintln(out, "已交还终端控制权。")
 		}

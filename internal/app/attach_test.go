@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/egoist/mygo/ui"
@@ -116,5 +117,48 @@ func TestAttachConfirmationShowsAndViewsTarget(t *testing.T) {
 	}
 	if <-result {
 		t.Fatal("取消后不应确认")
+	}
+}
+
+func TestAttachPolicySnapshotAndTargetClose(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		t.Run(fmt.Sprint(enabled), func(t *testing.T) {
+			targetCtx, closeTarget := context.WithCancel(context.Background())
+			defer closeTarget()
+			updates := make(chan func(), 4)
+			current := enabled
+			prompt := &attachConfirmation{autoAttach: func() bool { return current }, update: func(fn func()) { updates <- fn }}
+			c := controller{confirmation: prompt, pane: &pane{id: "a", tabID: "tab-a", ctx: targetCtx}}
+			notify := make(chan struct{}, 1)
+			done := make(chan error, 1)
+			go func() {
+				done <- c.attachAutoWith(context.Background(), "bash", func() error { notify <- struct{}{}; return nil }, func(ctx context.Context, _ string, confirm func(context.Context) error) error { return confirm(ctx) })
+			}()
+			if enabled {
+				if err := <-done; err != nil {
+					t.Fatal(err)
+				}
+				select {
+				case <-notify:
+					t.Fatal("自动允许仍发确认通知")
+				default:
+				}
+				return
+			}
+			<-notify
+			show := <-updates
+			show()
+			current = true
+			select {
+			case err := <-done:
+				t.Fatalf("设置变更批准了已有确认: %v", err)
+			default:
+			}
+			closeTarget()
+			if err := <-done; err == nil {
+				t.Fatal("目标关闭未取消接入")
+			}
+			(<-updates)()
+		})
 	}
 }

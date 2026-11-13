@@ -47,7 +47,7 @@ func makePane(dir string, win *mygo.Window, confirmation *attachConfirmation, wo
 		p.view.message = "等待确认远端 Bash 空提示符"
 		go func() {
 			err := sh.RecoverRemote(ctx, func(ctx context.Context) error {
-				return confirmation.askTarget(ctx, p.id, p.tabID)
+				return confirmation.askTargetMode(ctx, p.id, p.tabID, true)
 			})
 			win.Update(func() {
 				p.view.recovering = false

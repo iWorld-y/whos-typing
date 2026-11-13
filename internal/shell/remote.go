@@ -46,6 +46,7 @@ type remoteSession struct {
 	echo       []byte
 	echoDone   bool
 	recovery   bool
+	previous   *remoteSession
 	title      *TitleContext
 }
 
@@ -69,13 +70,17 @@ func (s *Session) attach(ctx context.Context, shellName string, show func(string
 		s.mu.Unlock()
 		return errors.New("终端会话尚未启动或已经结束")
 	}
+	if !recovery && s.remote != nil && (s.remote.orphan != nil || len(s.unconfirmed) != 0) {
+		s.mu.Unlock()
+		return errors.New("远端结果未知，请先接管并使用恢复远端接入")
+	}
 	if recovery {
 		if err := s.canRecoverRemote(); err != nil {
 			s.mu.Unlock()
 			return err
 		}
 	}
-	if s.active != nil || s.queued != nil || (s.remote != nil && (s.remote.attaching || (!recovery && s.remote.ready))) {
+	if (!recovery && (s.active != nil || s.queued != nil)) || (s.remote != nil && (s.remote.attaching || (!recovery && s.remote.ready))) {
 		s.mu.Unlock()
 		return errors.New("终端正在执行命令或远端已接入")
 	}
@@ -87,12 +92,17 @@ func (s *Session) attach(ctx context.Context, shellName string, show func(string
 	r.group = group
 	r.keys = s.keys
 	previous := s.remote
+	r.previous = previous
 	if s.remote != nil {
 		s.retired = append(s.retired, s.remote)
 	}
 	tokens := make([]string, 0, len(s.retired))
+	seen := make(map[string]bool, len(s.retired))
 	for _, old := range s.retired {
-		tokens = append(tokens, old.token)
+		if !seen[old.token] {
+			tokens = append(tokens, old.token)
+			seen[old.token] = true
+		}
 	}
 	r.bootstrap = remoteBootstrap(r.token, tokens...)
 	s.remote = r
@@ -263,6 +273,11 @@ func remoteBootstrap(token string, oldTokens ...string) string {
 	check := "__wt_check_" + token
 	attr := "__wt_attr_" + token
 	variable := "__wt_variable_" + token
+	exitHook := "__wt_exit_" + token
+	exitTrap := "__wt_exit_trap_" + token
+	exitPID := "__wt_exit_pid_" + token
+	exitCode := "__wt_exit_code_" + token
+	exitStatus := "__wt_exit_status_" + token
 	script := strings.Join([]string{
 		`if [ -z "${BASH_VERSION-}" ] || [[ $- != *i* ]] || ! shopt -q promptvars; then builtin printf '{{MARK}}F\037';`,
 		`else {{CHECK}}=0; for {{VARIABLE}} in PS1 PROMPT_COMMAND; do`,
@@ -270,6 +285,10 @@ func remoteBootstrap(token string, oldTokens ...string) string {
 		`case "${{{ATTR}}}" in *r*) {{CHECK}}=1 ;; esac; done;`,
 		`if [ "${{{CHECK}}}" = 1 ]; then unset {{CHECK}} {{ATTR}} {{VARIABLE}}; builtin printf '{{MARK}}F\037';`,
 		`else unset {{CHECK}} {{ATTR}} {{VARIABLE}}; {{CLEANUP}} {{GEN}}=0;`,
+		`{{EXIT_TRAP}}=$(trap -p EXIT); {{EXIT_PID}}=$$; {{EXIT_PID}}_sub=$BASH_SUBSHELL;`,
+		`{{EXIT_HOOK}}(){ eval "set -- ${{{EXIT_TRAP}}}"; builtin printf '%s' "${3-}"; };`,
+		`{{EXIT_CODE}}=$({{EXIT_HOOK}}); unset -f {{EXIT_HOOK}};`,
+		`trap '{{EXIT_STATUS}}=$?; if [[ $$ == "${{{EXIT_PID}}}" && $BASH_SUBSHELL == "${{{EXIT_PID}}_sub}" ]]; then builtin printf "{{MARK}}X:%s:%s\037" "$$" "${{{EXIT_STATUS}}}"; if [[ -n "${{{EXIT_TRAP}}}" ]]; then if {{RESTORE}} "${{{EXIT_STATUS}}}"; then eval "${{{EXIT_CODE}}}"; else eval "${{{EXIT_CODE}}}"; fi; fi; fi' EXIT;`,
 		`{{EMIT}}(){ builtin printf '{{MARK}}P:%s\037' "${{{GEN}}}"; };`,
 		`{{PROMPT}}(){ local s=$? a p; a=$(declare -p PS1 2>/dev/null || :); a="${a#declare -}"; a="${a%% *}";`,
 		`case "$a" in *r*) builtin printf '{{MARK}}F\037'; return "$s" ;; esac;`,
@@ -278,7 +297,7 @@ func remoteBootstrap(token string, oldTokens ...string) string {
 		`{{META}} {{GEN}}=$(( ${{{GEN}}:-0} + 1 )); builtin printf '{{MARK}}C:%s\037' "${{{GEN}}}";`,
 		`PS1="${p}"'\[$({{EMIT}})\]'; return "$s"; };`,
 		`{{BEGIN}}(){ {{PREVIOUS}}=$?; builtin printf '{{MARK}}S\037'; return "${{{PREVIOUS}}}"; };`,
-		`{{RESTORE}}(){ return "${{{PREVIOUS}}}"; };`,
+		`{{RESTORE}}(){ return "${1-${{{PREVIOUS}}}}"; };`,
 		`{{END}}(){ local s=$1; unset {{DATA}} {{PREVIOUS}}; builtin printf '{{MARK}}E:%s\037' "$s"; return "$s"; };`,
 		`{{ATTR}}=$(declare -p PROMPT_COMMAND 2>/dev/null || :); {{ATTR}}="${{{ATTR}}#declare -}"; {{ATTR}}="${{{ATTR}}%% *}";`,
 		`case "${{{ATTR}}}" in *a*) if (( BASH_VERSINFO[0] > 5 || (BASH_VERSINFO[0] == 5 && BASH_VERSINFO[1] >= 1) )); then PROMPT_COMMAND+=({{PROMPT}});`,
@@ -292,6 +311,7 @@ func remoteBootstrap(token string, oldTokens ...string) string {
 		"{{GEN}}", generation, "{{BEGIN}}", begin, "{{RESTORE}}", restore,
 		"{{END}}", end, "{{PREVIOUS}}", previous, "{{DATA}}", data,
 		"{{CHECK}}", check, "{{ATTR}}", attr, "{{VARIABLE}}", variable,
+		"{{EXIT_HOOK}}", exitHook, "{{EXIT_TRAP}}", exitTrap, "{{EXIT_PID}}", exitPID, "{{EXIT_CODE}}", exitCode, "{{EXIT_STATUS}}", exitStatus,
 	).Replace(script)
 	return "eval " + remoteQuote(script)
 }
@@ -451,6 +471,33 @@ func (s *Session) controlRemote(remote *remoteSession, mark string) bool {
 			remote.title = &value
 		}
 		return true
+	case strings.HasPrefix(mark, "X:"):
+		parts := strings.Split(mark, ":")
+		if len(parts) != 3 {
+			return false
+		}
+		pid, err := strconv.Atoi(parts[1])
+		status, statusErr := strconv.Atoi(parts[2])
+		if err != nil || pid <= 0 || statusErr != nil || status < 0 || status > 255 {
+			return false
+		}
+		remote.ready = false
+		if r := s.active; r != nil && r.remoteBinding == remote {
+			s.captureOutput(r, nil, true)
+			s.active = nil
+			s.state(false)
+			if r.finished {
+				s.finish(r, r.exitCode, r.err)
+			} else {
+				s.markUnknown(r)
+				if r.injecting {
+					remote.orphan = r
+				}
+				s.finish(r, 1, errors.New("远端接入已失效，命令结果未知，请接管后恢复远端接入"))
+			}
+			s.reportBlockedInput()
+		}
+		return true
 	case mark == "I":
 		if remote.attaching {
 			s.flushAttachEcho(remote)
@@ -511,7 +558,7 @@ func (s *Session) controlRemote(remote *remoteSession, mark string) bool {
 			s.setTitleContext(*remote.title)
 			remote.title = nil
 		}
-		if r := s.active; r != nil && r.remote {
+		if r := s.active; r != nil && r.remoteBinding == remote {
 			s.active = nil
 			s.state(false)
 			if r.finished {
@@ -537,7 +584,7 @@ func (s *Session) controlRemote(remote *remoteSession, mark string) bool {
 		s.armIdle()
 		return true
 	case mark == "S":
-		if r := s.active; r != nil && r.remote {
+		if r := s.active; r != nil && r.remoteBinding == remote {
 			command := strings.ReplaceAll(r.command, "\n", "\r\n")
 			s.parsed = append(s.parsed, []byte("\r\n[CLI] "+command+"\r\n")...)
 			r.started = true
@@ -550,7 +597,7 @@ func (s *Session) controlRemote(remote *remoteSession, mark string) bool {
 		if err != nil || code < 0 || code > 255 {
 			return false
 		}
-		if r := s.active; r != nil && r.remote && r.started {
+		if r := s.active; r != nil && r.remoteBinding == remote && r.started {
 			s.captureOutput(r, nil, true)
 			r.finished = true
 			r.exitCode = code
@@ -586,11 +633,11 @@ func (s *Session) remoteDisconnected() {
 	if remote.attaching {
 		s.failAttach(remote, errors.New("远端连接已结束，接入未完成"))
 	} else {
-		if r := s.queued; r != nil && r.remote {
+		if r := s.queued; r != nil && r.remoteBinding == remote {
 			s.queued = nil
 			s.finish(r, 1, errors.New("远端连接已结束"))
 		}
-		if r := s.active; r != nil && r.remote {
+		if r := s.active; r != nil && r.remoteBinding == remote {
 			if r.injecting {
 				r.resetWriteDeadline = true
 				_ = s.pty.SetWriteDeadline(time.Now())

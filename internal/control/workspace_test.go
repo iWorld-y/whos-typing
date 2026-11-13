@@ -446,3 +446,49 @@ func TestWorkspaceOpaqueLongAndShortIDs(t *testing.T) {
 		t.Fatalf("目标未原样传递: %v", calls)
 	}
 }
+
+func TestStatusSessionJSONLegacyDiagnostics(t *testing.T) {
+	a := &routedTarget{id: "a", owner: "human_takeover"}
+	w := &workspaceStub{sessions: map[string]Executor{"a": a}, current: "a"}
+	path := readTestServer(t, w)
+	var out bytes.Buffer
+	if err := statusSessionJSON(path, "a", &out); err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["control"] != "human_takeover" || got["diagnostics_available"] != false || got["message"] == "" {
+		t.Fatalf("旧窗口状态: %v", got)
+	}
+	if a.ControlStatus() != "human_takeover" {
+		t.Fatal("查询改变控制方")
+	}
+}
+
+type diagnosticTarget struct{ *routedTarget }
+
+func (p *diagnosticTarget) SessionDiagnostic() Diagnostic {
+	return Diagnostic{Control: p.ControlStatus(), Remote: "not_ready", Unknown: true, SuggestedAction: "接管终端并使用恢复远端接入", Available: true}
+}
+
+func TestStatusSessionJSONDiagnostics(t *testing.T) {
+	p := &diagnosticTarget{&routedTarget{id: "a", owner: "agent"}}
+	w := &workspaceStub{sessions: map[string]Executor{"a": p}, current: "a"}
+	path := readTestServer(t, w)
+	var out bytes.Buffer
+	if err := statusSessionJSON(path, "a", &out); err != nil {
+		t.Fatal(err)
+	}
+	var got Diagnostic
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Control != "agent" || got.Remote != "not_ready" || !got.Unknown || !got.Available || got.SuggestedAction == "" {
+		t.Fatalf("诊断内容错误: %+v", got)
+	}
+	if p.ControlStatus() != "agent" {
+		t.Fatal("查询改变控制方")
+	}
+}

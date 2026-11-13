@@ -9,10 +9,11 @@ import (
 )
 
 type workspaceView struct {
-	workspace *workspace
-	update    func(func())
-	message   string
-	ratios    map[string]*float32
+	workspace    *workspace
+	update       func(func())
+	message      string
+	ratios       map[string]*float32
+	openSettings func()
 }
 
 func (v *workspaceView) report(err error) {
@@ -134,6 +135,11 @@ func (v *workspaceView) tabBar(c *ui.Context, w *workspace) {
 	bar := c.TitleBar()
 	height := max(bar.Height, 32)
 	ui.Row(c.Key("tabs-row")).FillWidth().Height(height).Padding(0, bar.Right+8, 0, bar.Left+8).AlignItems(ui.Center).DragWindow().Children(func() {
+		if v.openSettings != nil {
+			if ui.Button(c.Key("settings"), "设置").KeepFocus().Shrink(0).Clicked() {
+				v.openSettings()
+			}
+		}
 		if len(w.tabs) == 0 {
 			return
 		}

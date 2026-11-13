@@ -117,9 +117,13 @@ func (s *Session) Execute(ctx context.Context, command string) control.Result {
 		}
 	}
 	if s.send == nil || !ready || s.queued != nil || s.active != nil {
+		unknown := remote && (s.remote.orphan != nil || len(s.unconfirmed) != 0)
 		s.mu.Unlock()
+		if unknown {
+			return control.Result{Err: errors.New("远端命令结果未知，请接管后使用恢复远端接入")}
+		}
 		if remote {
-			return control.Result{Err: errors.New("远端 Shell 尚未就绪或状态未知，请完成当前输入或重新接入")}
+			return control.Result{Err: errors.New("远端 Shell 尚未就绪，请完成当前输入或等待当前命令；若接入失效，请接管后使用恢复远端接入")}
 		}
 		return control.Result{Err: errors.New("终端尚未就绪或有人工输入、命令正在执行")}
 	}
@@ -146,6 +150,9 @@ func (s *Session) Execute(ctx context.Context, command string) control.Result {
 		return control.Result{Err: fmt.Errorf("创建输出文件失败: %w", err)}
 	}
 	r := &request{command: command, source: sourceName, output: output, done: make(chan struct{}), remote: remote, humanBefore: s.owner == ControlHuman}
+	if remote {
+		r.remoteBinding = s.remote
+	}
 	r.barrier = []byte("\x00WT-REQUEST:" + s.token + ":" + filepath.Base(output.Name()))
 	s.queued = r
 	s.stopIdle()
@@ -157,9 +164,16 @@ func (s *Session) Execute(ctx context.Context, command string) control.Result {
 		return r.result
 	case <-ctx.Done():
 		s.mu.Lock()
+		select {
+		case <-r.done:
+			result := r.result
+			s.mu.Unlock()
+			return result
+		default:
+		}
 		r.abandoned = true
-		if r.remote && s.remote != nil {
-			s.remote.ready = false
+		if r.remoteBinding != nil {
+			r.remoteBinding.ready = false
 		}
 		if s.queued == r {
 			s.queued = nil
@@ -169,8 +183,8 @@ func (s *Session) Execute(ctx context.Context, command string) control.Result {
 		if s.active == r && !r.finished {
 			s.markUnknown(r)
 		}
-		if r.remote && s.remote != nil && s.active == r {
-			s.remote.orphan = r
+		if r.remoteBinding != nil && s.active == r {
+			r.remoteBinding.orphan = r
 			s.active = nil
 			s.state(false)
 			if r.injecting {
@@ -210,6 +224,13 @@ func (s *Session) Write(p []byte) (int, error) {
 			s.failAttach(r, errors.New("终端已由人类接管，远端接入未发送"))
 			return len(p), nil
 		}
+		if r.recovery {
+			if (s.active != nil && s.active.injecting) || (r.previous.orphan != nil && r.previous.orphan.injecting) {
+				s.failAttach(r, errors.New("命令输入仍在发送，请稍后恢复远端接入"))
+				return len(p), nil
+			}
+			s.abandonRemoteRequests(r.previous)
+		}
 		s.stopIdle()
 		if !r.recovery {
 			s.setControl(ControlAgent)
@@ -247,8 +268,8 @@ func (s *Session) Write(p []byte) (int, error) {
 		_, err := s.writeAgentPTY(r, line)
 		if err != nil && s.active == r {
 			s.active = nil
-			s.remote.ready = false
-			s.remote.orphan = r
+			r.remoteBinding.ready = false
+			r.remoteBinding.orphan = r
 			s.markUnknown(r)
 			s.state(false)
 			s.finish(r, 1, fmt.Errorf("发送远端命令失败，结果未知: %w", err))
@@ -263,7 +284,7 @@ func (s *Session) Write(p []byte) (int, error) {
 		s.queued = nil
 		ready := s.ready && !s.dirty && s.pending == 0
 		if r.remote {
-			ready = s.remote != nil && !s.remote.attaching && s.remote.ready && len(s.remote.idleOutput) == 0 && !s.remote.dirty && s.remote.pending == 0 && s.remote.orphan == nil
+			ready = s.remote == r.remoteBinding && s.remote != nil && !s.remote.attaching && s.remote.ready && len(s.remote.idleOutput) == 0 && !s.remote.dirty && s.remote.pending == 0 && s.remote.orphan == nil
 		}
 		if s.closed || !ready || s.active != nil {
 			s.restoreQueuedControl(r)

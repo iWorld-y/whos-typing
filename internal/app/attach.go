@@ -10,12 +10,14 @@ import (
 )
 
 type attachConfirmation struct {
-	update    func(func())
-	open      bool
-	pending   chan bool
-	sessionID string
-	tabID     string
-	focus     func(string)
+	update     func(func())
+	open       bool
+	pending    chan bool
+	sessionID  string
+	tabID      string
+	focus      func(string)
+	autoAttach func() bool
+	recovery   bool
 }
 
 func (c controller) AttachAuto(ctx context.Context, shellName string, notify func() error) error {
@@ -25,11 +27,19 @@ func (c controller) AttachAuto(ctx context.Context, shellName string, notify fun
 	if c.pane == nil || c.pane.ctx == nil {
 		return errors.New("目标会话不可用")
 	}
+	return c.attachAutoWith(ctx, shellName, notify, c.Session.AttachAuto)
+}
+
+func (c controller) attachAutoWith(ctx context.Context, shellName string, notify func() error, attach func(context.Context, string, func(context.Context) error) error) error {
+	auto := c.confirmation.autoAttach != nil && c.confirmation.autoAttach()
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	stop := context.AfterFunc(c.pane.ctx, cancel)
 	defer stop()
-	return c.Session.AttachAuto(ctx, shellName, func(ctx context.Context) error {
+	return attach(ctx, shellName, func(ctx context.Context) error {
+		if auto {
+			return nil
+		}
 		if err := notify(); err != nil {
 			return err
 		}
@@ -41,6 +51,10 @@ func (c controller) AttachAuto(ctx context.Context, shellName string, notify fun
 func (a *attachConfirmation) ask(ctx context.Context) error { return a.askTarget(ctx, "", "") }
 
 func (a *attachConfirmation) askTarget(ctx context.Context, sessionID, tabID string) error {
+	return a.askTargetMode(ctx, sessionID, tabID, false)
+}
+
+func (a *attachConfirmation) askTargetMode(ctx context.Context, sessionID, tabID string, recovery bool) error {
 	result := make(chan bool, 1)
 	a.update(func() {
 		if ctx.Err() != nil {
@@ -52,6 +66,7 @@ func (a *attachConfirmation) askTarget(ctx context.Context, sessionID, tabID str
 		}
 		a.pending = result
 		a.sessionID, a.tabID = sessionID, tabID
+		a.recovery = recovery
 		a.open = true
 	})
 	defer a.update(func() {
@@ -76,6 +91,9 @@ func (a *attachConfirmation) view(c *ui.Context) {
 		return
 	}
 	message := "请确认目标终端已登录目标服务器，并停在远端 Bash 的空提示符。确认后，程序将自动输入接入命令。"
+	if a.recovery {
+		message = "请确认目标终端已停在远端 Bash 的空提示符。恢复将放弃等待旧请求，其结果仍然未知；不会重放命令或中断连接。"
+	}
 	if a.sessionID != "" {
 		message += fmt.Sprintf("\n会话: %s\n标签页: %s", a.sessionID, a.tabID)
 	}

@@ -362,9 +362,9 @@ func (s *Session) finishWithoutPrompt(r *request) {
 		return
 	}
 	s.active = nil
-	if r.remote && s.remote != nil {
-		s.remote.ready = false
-		s.remote.orphan = r
+	if r.remoteBinding != nil {
+		r.remoteBinding.ready = false
+		r.remoteBinding.orphan = r
 		s.markTitleUnknown()
 	} else {
 		s.ready = false
