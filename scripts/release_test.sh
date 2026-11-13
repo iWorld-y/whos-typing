@@ -13,7 +13,7 @@ other="$test_dir/other"
 mkdir -p "$test_dir/bin"
 cat > "$test_dir/bin/go" <<'EOF'
 #!/bin/sh
-printf 'whos-typing-cli %s\n' "${WT_TEST_VERSION:-0.1.0}"
+printf 'whos-typing-cli %s\n' "${WT_TEST_VERSION:-3}"
 EOF
 chmod +x "$test_dir/bin/go"
 export PATH="$test_dir/bin:$PATH"
@@ -55,19 +55,21 @@ git -C "$other" push -q origin master
 assert_fails '本地 master 与远端不一致'
 git -C "$work" reset --hard -q origin/master
 
-git -C "$other" tag v0.1.0
-git -C "$other" push -q origin refs/tags/v0.1.0
+git -C "$other" tag v3
+git -C "$other" push -q origin refs/tags/v3
 assert_fails '远端标签已存在'
 
-export WT_TEST_VERSION=0.1.1
-git -C "$work" tag v0.1.1
+export WT_TEST_VERSION=4
+git -C "$work" tag v4
 assert_fails '本地标签已存在'
-git -C "$work" tag -d v0.1.1 >/dev/null
+git -C "$work" tag -d v4 >/dev/null
 
-export WT_TEST_VERSION=invalid
-assert_fails '版本格式无效'
+for WT_TEST_VERSION in invalid 0 03 3.0.0 -1; do
+	export WT_TEST_VERSION
+	assert_fails '版本格式无效'
+done
 
-export WT_TEST_VERSION=0.1.2
+export WT_TEST_VERSION=5
 (cd "$work" && bash scripts/release.sh) >"$test_dir/result" 2>&1
-test "$(git --git-dir="$origin" rev-parse refs/tags/v0.1.2)" = "$(git -C "$work" rev-parse HEAD)"
+test "$(git --git-dir="$origin" rev-parse refs/tags/v5)" = "$(git -C "$work" rev-parse HEAD)"
 printf '%s\n' '发布脚本的检查和标签推送测试通过。'

@@ -17,7 +17,7 @@ whos-typing 使用 Go 和 MyGo 原生 UI，在一个窗口中运行多个独立�
 
 ## 发布
 
-应用版本和 CLI 的 `--version` 都来自 `mygo.json`。修改版本号后，先提交并推送 `master`，保持工作区干净，再执行：
+应用版本和 CLI 的 `--version` 都来自 `mygo.json`。从 `v3` 开始使用正整数版本，后续依次为 `v4`、`v5`。修改版本号后，先提交并推送 `master`，保持工作区干净，再执行：
 
 ```sh
 make release

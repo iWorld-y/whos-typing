@@ -25,7 +25,7 @@ case "$version_line" in
 	"whos-typing-cli "*) version=${version_line#whos-typing-cli } ;;
 	*) printf '无法读取 CLI 版本：%s\n' "$version_line" >&2; exit 1 ;;
 esac
-if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+if [[ ! "$version" =~ ^[1-9][0-9]*$ ]]; then
 	printf '版本格式无效：%s\n' "$version" >&2
 	exit 1
 fi
