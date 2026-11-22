@@ -21,13 +21,24 @@ func (s *Session) Read(p []byte) (int, error) {
 		if len(s.parsed) != 0 {
 			n := copy(p, s.parsed)
 			s.parsed = s.parsed[n:]
+			if s.pasteOutputPending == nil {
+				s.notePasteOutput()
+			}
 			s.mu.Unlock()
 			return n, nil
+		}
+		// MyGo 已解析上次读取的内容。保留状态直到缓冲也耗尽。
+		if s.pasteOutputPending != nil {
+			close(s.pasteOutputPending)
+			s.pasteOutputPending = nil
 		}
 		s.mu.Unlock()
 		buf := make([]byte, 64<<10)
 		n, err := s.pty.Read(buf)
 		if n > 0 {
+			s.mu.Lock()
+			s.notePasteOutput()
+			s.mu.Unlock()
 			s.readBuf = append(s.readBuf, buf[:n]...)
 			s.parse(false)
 		}

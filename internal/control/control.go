@@ -19,6 +19,7 @@ import (
 
 type request struct {
 	Command   string `json:"command"`
+	Text      string `json:"text,omitempty"`
 	Action    string `json:"action,omitempty"`
 	Shell     string `json:"shell,omitempty"`
 	Timeout   int64  `json:"timeout,omitempty"`
@@ -39,6 +40,7 @@ type response struct {
 	Diagnostic   *Diagnostic     `json:"diagnostic,omitempty"`
 	Version      int             `json:"version,omitempty"`
 	MultiSession bool            `json:"multi_session,omitempty"`
+	SessionPaste bool            `json:"session_paste,omitempty"`
 	List         *SessionList    `json:"list,omitempty"`
 	Current      *CurrentSession `json:"current,omitempty"`
 	Created      *CreatedSession `json:"created,omitempty"`
@@ -206,12 +208,14 @@ func handle(conn *net.UnixConn, executor Executor) {
 		return
 	}
 	workspace, hasWorkspace := executor.(Workspace)
-	if req.Action == "hello" {
+	pasteCapability, _ := executor.(pasteWorkspace)
+	negotiated := req.Action == "hello"
+	if negotiated {
 		if !hasWorkspace {
 			_ = json.NewEncoder(conn).Encode(response{Error: "窗口不支持多会话"})
 			return
 		}
-		if err := json.NewEncoder(conn).Encode(response{Version: protocolVersion, MultiSession: true}); err != nil {
+		if err := json.NewEncoder(conn).Encode(response{Version: protocolVersion, MultiSession: true, SessionPaste: pasteCapability != nil && pasteCapability.SupportsSessionPaste()}); err != nil {
 			return
 		}
 		_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
@@ -224,6 +228,10 @@ func handle(conn *net.UnixConn, executor Executor) {
 		}
 	} else if req.SessionID != "" {
 		_ = json.NewEncoder(conn).Encode(response{Error: "请先确认多会话协议"})
+		return
+	}
+	if req.Action == "session.paste" && (!negotiated || req.SessionID == "" || pasteCapability == nil || !pasteCapability.SupportsSessionPaste()) {
+		_ = json.NewEncoder(conn).Encode(response{Error: "未发送粘贴：需要支持粘贴的窗口及完整会话 ID"})
 		return
 	}
 	if hasWorkspace {
@@ -258,6 +266,9 @@ func handle(conn *net.UnixConn, executor Executor) {
 			id, target, err := workspace.ResolveSession(req.SessionID)
 			if err != nil {
 				reply.Error = err.Error()
+				if req.Action == "session.paste" {
+					reply.Error = "未发送粘贴：" + reply.Error
+				}
 				_ = json.NewEncoder(conn).Encode(reply)
 				return
 			}
@@ -288,6 +299,10 @@ bound:
 		_, _ = io.Copy(io.Discard, r)
 		cancel()
 	}()
+	if req.Action == "session.paste" {
+		handlePaste(ctx, conn, executor, req.Text)
+		return
+	}
 	if req.Action == "session.read" {
 		handleSessionRead(conn, executor)
 		return

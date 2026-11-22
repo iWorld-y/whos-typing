@@ -55,8 +55,9 @@ const protocolVersion = 2
 
 // clientConn 在同一连接先确认服务能力，再发送操作。
 type clientConn struct {
-	conn net.Conn
-	read *bufio.Reader
+	conn         net.Conn
+	read         *bufio.Reader
+	sessionPaste bool
 }
 
 func connectWorkspace(path string) (*clientConn, error) {
@@ -75,6 +76,7 @@ func connectWorkspace(path string) (*clientConn, error) {
 		_ = conn.Close()
 		return nil, errors.New("窗口不支持多会话，请升级 Who's Typing 窗口")
 	}
+	c.sessionPaste = reply.SessionPaste
 	_ = conn.SetDeadline(time.Time{})
 	return c, nil
 }

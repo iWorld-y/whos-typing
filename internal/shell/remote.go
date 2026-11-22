@@ -80,7 +80,7 @@ func (s *Session) attach(ctx context.Context, shellName string, show func(string
 			return err
 		}
 	}
-	if (!recovery && (s.active != nil || s.queued != nil)) || (s.remote != nil && (s.remote.attaching || (!recovery && s.remote.ready))) {
+	if s.paste != nil || (!recovery && (s.active != nil || s.queued != nil)) || (s.remote != nil && (s.remote.attaching || (!recovery && s.remote.ready))) {
 		s.mu.Unlock()
 		return errors.New("终端正在执行命令或远端已接入")
 	}

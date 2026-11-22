@@ -45,6 +45,9 @@ func (s *Session) state(active bool) {
 func (s *Session) OnKey(mods ui.Modifiers, key ui.Key) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if mods&ui.Super == 0 {
+		s.invalidatePaste(errPasteChanged)
+	}
 	if s.blocksHumanInput() {
 		if mods&ui.Ctrl != 0 && key == ui.KeyC {
 			return false
@@ -74,6 +77,7 @@ func (s *Session) OnKey(mods ui.Modifiers, key ui.Key) bool {
 func (s *Session) OnPaste() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.invalidatePaste(errPasteChanged)
 	if s.blocksHumanInput() {
 		s.inputBlocked = true
 		return true
@@ -116,7 +120,7 @@ func (s *Session) Execute(ctx context.Context, command string) control.Result {
 			return control.Result{Err: errors.New("远端命令不能包含 NUL 字节")}
 		}
 	}
-	if s.send == nil || !ready || s.queued != nil || s.active != nil {
+	if s.send == nil || !ready || s.queued != nil || s.active != nil || s.paste != nil {
 		unknown := remote && (s.remote.orphan != nil || len(s.unconfirmed) != 0)
 		s.mu.Unlock()
 		if unknown {
@@ -206,6 +210,10 @@ func (s *Session) Execute(ctx context.Context, command string) control.Result {
 func (s *Session) Write(p []byte) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if bytes.HasPrefix(p, []byte("\x00WT-PASTE:"+s.token+":")) {
+		s.writePaste(p)
+		return len(p), nil
+	}
 	if bytes.HasPrefix(p, []byte("\x00WT-ATTACH:"+s.token+":")) {
 		r := s.remote
 		if r == nil || !r.attaching || !bytes.Equal(p, r.auto) {
@@ -330,9 +338,10 @@ func (s *Session) Write(p []byte) (int, error) {
 	if s.closed {
 		return 0, os.ErrClosed
 	}
-	if terminalReply.Match(p) {
+	if terminalReply.Match(p) || bytes.Equal(p, []byte("\x1b[I")) || bytes.Equal(p, []byte("\x1b[O")) {
 		return s.writePTY(p)
 	}
+	s.invalidatePaste(errPasteChanged)
 	// 屏障前已排队的人工输入应先处理，再决定能否执行 CLI 命令。
 	if s.blocksHumanInput() && (s.queued == nil || !s.queued.humanBefore) {
 		if isInterrupt(p) {
@@ -348,6 +357,7 @@ func (s *Session) Write(p []byte) (int, error) {
 		return len(p), nil
 	}
 	if s.humanForegroundInput() {
+		s.trackForegroundEdit(p)
 		if r := s.remote; r != nil && r.attaching && r.injected {
 			r.input = append(r.input, p...)
 		}

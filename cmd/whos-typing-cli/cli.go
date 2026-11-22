@@ -11,7 +11,7 @@ import (
 
 func printJSON(out io.Writer, value any) error { return json.NewEncoder(out).Encode(value) }
 
-func run(args []string, out, errOut io.Writer) int {
+func runWithInput(args []string, stdin io.Reader, out, errOut io.Writer) int {
 	if len(args) > 0 && args[0] == "ssh" {
 		return runSSH(args[1:], out, errOut)
 	}
@@ -29,6 +29,8 @@ func run(args []string, out, errOut io.Writer) int {
 		code, err = control.RunSession(o.session, o.command, o.timeout, out)
 	case "session.read":
 		err = control.ReadSessionFor(o.session, out)
+	case "session.paste":
+		err = control.PasteSession(o.session, stdin, out, errOut)
 	case "session.status", "session.release":
 		if o.action == "session.status" && o.json {
 			err = control.StatusSessionJSON(o.session, out)

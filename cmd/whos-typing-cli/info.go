@@ -11,6 +11,7 @@ import (
 const usage = `用法: whos-typing-cli [--session ID] [--timeout 时间] [--] '命令'
       whos-typing-cli [--session ID] attach --remote --shell bash [--auto]
       whos-typing-cli [--session ID] session {read|release|focus}
+      whos-typing-cli --session ID session paste --stdin
       whos-typing-cli [--session ID] session status [--json]
       whos-typing-cli session {list|current} [--json]
       whos-typing-cli tab new [--focus] [--json]

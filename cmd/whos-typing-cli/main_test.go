@@ -4,6 +4,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"os"
 	"strings"
 	"testing"
@@ -109,5 +110,23 @@ func TestParseRenameTab(t *testing.T) {
 		if _, err := parseArgs(args); err == nil {
 			t.Fatalf("未拒绝参数 %v", args)
 		}
+	}
+}
+
+func run(args []string, out, errOut io.Writer) int {
+	return runWithInput(args, strings.NewReader(""), out, errOut)
+}
+
+func TestPasteArgsAndInvalidInput(t *testing.T) {
+	if _, err := parseArgs([]string{"session", "paste", "--stdin"}); err == nil {
+		t.Fatal("省略目标必须失败")
+	}
+	opt, err := parseArgs([]string{"--session", "session_01", "session", "paste", "--stdin"})
+	if err != nil || opt.action != "session.paste" || opt.session != "session_01" {
+		t.Fatalf("%+v %v", opt, err)
+	}
+	var stderr bytes.Buffer
+	if code := runWithInput([]string{"--session", "session_01", "session", "paste", "--stdin"}, strings.NewReader("a\x1bb"), io.Discard, &stderr); code != 1 || !strings.Contains(stderr.String(), "控制字符") {
+		t.Fatalf("返回 %d: %s", code, stderr.String())
 	}
 }
