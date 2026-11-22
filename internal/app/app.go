@@ -24,6 +24,7 @@ type controller struct {
 	*session
 	confirmation *attachConfirmation
 	pane         *pane
+	update       func(func())
 }
 
 type appError struct {

@@ -53,6 +53,7 @@ func (s *Session) setControl(owner ControlOwner) {
 	if s.owner == owner {
 		return
 	}
+	s.invalidatePaste(errPasteChanged)
 	s.owner = owner
 	if s.onControl != nil {
 		s.onControl(owner)
@@ -74,6 +75,9 @@ func (s *Session) TakeOver() {
 	defer s.mu.Unlock()
 	if s.owner == ControlAgent {
 		s.stopIdle()
+		if r := s.paste; r != nil && r.writing {
+			_ = s.pty.SetWriteDeadline(time.Now())
+		}
 		s.setControl(ControlHumanTakeover)
 		if r := s.queued; r != nil {
 			s.queued = nil
@@ -142,11 +146,11 @@ func (s *Session) ReleaseControl() error {
 		return errors.New("终端已由人类接管，请等待交还 Agent")
 	}
 	unknown := len(s.unconfirmed) != 0 || (s.remote != nil && s.remote.orphan != nil && !s.remote.orphan.finished)
-	busy := s.queued != nil || s.active != nil
+	busy := s.queued != nil || s.active != nil || s.paste != nil
 	if s.remote != nil && (unknown || (!busy && !s.remote.ready && !s.remote.attaching)) {
 		return errors.New("远端状态未同步或结果未知，请接管后使用恢复远端接入")
 	}
-	if s.queued != nil || s.active != nil || len(s.unconfirmed) != 0 || (s.remote != nil && s.remote.attaching) {
+	if busy || len(s.unconfirmed) != 0 || (s.remote != nil && s.remote.attaching) {
 		return errors.New("命令仍在执行或状态未知，请等待终端空闲后再交还")
 	}
 	s.stopIdle()
@@ -208,7 +212,7 @@ func (s *Session) armIdle() {
 }
 
 func (s *Session) idleReady() bool {
-	if s.queued != nil || s.active != nil || len(s.unconfirmed) != 0 {
+	if s.queued != nil || s.active != nil || s.paste != nil || len(s.unconfirmed) != 0 {
 		return false
 	}
 	if r := s.remote; r != nil {

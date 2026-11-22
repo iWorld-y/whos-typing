@@ -68,6 +68,13 @@ func parseArgs(args []string) (options, error) {
 		o.action = "session." + args[1]
 		args = args[2:]
 		switch o.action {
+		case "session.paste":
+			if !sessionSet {
+				return o, errors.New("粘贴必须使用 --session 指定完整会话 ID")
+			}
+			if len(args) != 1 || args[0] != "--stdin" {
+				return o, errors.New("用法: whos-typing-cli --session ID session paste --stdin")
+			}
 		case "session.read", "session.release", "session.focus":
 			if len(args) != 0 {
 				return o, errors.New(usage)

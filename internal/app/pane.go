@@ -38,7 +38,7 @@ func makePane(dir string, win *mygo.Window, confirmation *attachConfirmation, wo
 	}
 	p.terminal = term
 	p.closeFn = life.close
-	p.target = controller{Session: sh, session: life, confirmation: confirmation, pane: p}
+	p.target = controller{Session: sh, session: life, confirmation: confirmation, pane: p, update: win.Update}
 	p.view.recoverRemote = func() {
 		if p.view.recovering {
 			return

@@ -24,6 +24,7 @@ type pane struct {
 	life      *session
 	view      *controlView
 	search    paneSearch
+	paste     *panePaste
 	focus     ui.Handle
 	ctx       context.Context
 	cancel    context.CancelFunc
@@ -292,6 +293,10 @@ func (w *workspace) NewTab(focus bool) (control.CreatedSession, error) {
 func (w *workspace) SplitSession(id, direction string, focus bool) (control.CreatedSession, error) {
 	return w.create(id, direction, focus)
 }
+
+// SupportsSessionPaste 声明窗口可将粘贴请求路由到指定窗格。
+func (w *workspace) SupportsSessionPaste() bool { return true }
+
 func (w *workspace) Execute(context.Context, string) control.Result {
 	return control.Result{Err: errors.New("必须先解析会话")}
 }

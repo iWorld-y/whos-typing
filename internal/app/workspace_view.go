@@ -203,6 +203,9 @@ func (v *workspaceView) node(c *ui.Context, n *layoutNode, request string, actua
 						*actual = p.id
 					}
 				})
+				if p.paste != nil && v.workspace.currentLocked() == p.id {
+					p.paste.view(c, p.id, p.tabID)
+				}
 			})
 		})
 		return
