@@ -135,6 +135,17 @@ func (l *Link) Run(command string, out, errOut io.Writer) (int, error) {
 	}
 	return 1, err
 }
+
+// OpenChannel 为受管会话启动一个非 PTY 通道；连接不可用时失败，不回退直连。
+// 调用方负责设置 stdin/stdout 管道并启动进程。
+func (l *Link) OpenChannel(remote string) (*exec.Cmd, error) {
+	if !l.Connected() {
+		return nil, errors.New("连接不可用，请显式 connect；受管会话未启动")
+	}
+	args := append(l.base(), "-o", "ProxyCommand=false", "-o", "ProxyJump=none", "-T", l.Target, remote)
+	return exec.Command(l.SSH, args...), nil
+}
+
 func (l *Link) Disconnect() error {
 	lock, err := os.OpenFile(l.Socket+".lock", os.O_CREATE|os.O_RDWR, 0600)
 	if err != nil {

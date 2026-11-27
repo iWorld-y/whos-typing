@@ -61,22 +61,23 @@ type workspaceTab struct {
 type paneFactory func(string, func(int)) (*pane, error)
 
 type workspace struct {
-	mu            sync.Mutex
-	shutdownOnce  sync.Once
-	tabs          []*workspaceTab
-	panes         map[string]*pane
-	selected      string
-	focusRequest  string
-	terminalFocus string
-	blurPane      *pane
-	searchBlur    []*pane
-	stopping      bool
-	factory       paneFactory
-	ids           *idAllocator
-	notify        func(bool)
-	windowFocused func() bool
-	onEmpty       func()
-	onError       func(*pane, error)
+	mu             sync.Mutex
+	shutdownOnce   sync.Once
+	tabs           []*workspaceTab
+	panes          map[string]*pane
+	selected       string
+	focusRequest   string
+	terminalFocus  string
+	blurPane       *pane
+	searchBlur     []*pane
+	stopping       bool
+	factory        paneFactory
+	managedFactory func(id string, onExit func(int), target, config string) (*pane, error)
+	ids            *idAllocator
+	notify         func(bool)
+	windowFocused  func() bool
+	onEmpty        func()
+	onError        func(*pane, error)
 }
 
 func newWorkspace(ids *idAllocator, factory paneFactory) *workspace {
@@ -189,7 +190,7 @@ func (w *workspace) changed(focus bool) {
 }
 
 // create 先创建资源，再提交布局；回调等待提交结束以防早退和迟到回调。
-func (w *workspace) create(target, direction string, focus bool) (control.CreatedSession, error) {
+func (w *workspace) create(build paneFactory, target, direction string, focus bool) (control.CreatedSession, error) {
 	w.mu.Lock()
 	if w.stopping {
 		w.mu.Unlock()
@@ -236,7 +237,7 @@ func (w *workspace) create(target, direction string, focus bool) (control.Create
 			}
 		}()
 	}
-	p, err = w.factory(id, onExit)
+	p, err = build(id, onExit)
 	if err != nil {
 		if p != nil {
 			p.close()
@@ -288,10 +289,20 @@ func (w *workspace) create(target, direction string, focus bool) (control.Create
 }
 
 func (w *workspace) NewTab(focus bool) (control.CreatedSession, error) {
-	return w.create("", "", focus)
+	return w.create(w.factory, "", "", focus)
 }
 func (w *workspace) SplitSession(id, direction string, focus bool) (control.CreatedSession, error) {
-	return w.create(id, direction, focus)
+	return w.create(w.factory, id, direction, focus)
+}
+
+// OpenManagedSSH 显式创建受管 SSH 标签页；普通新建标签和分屏仍启动本地 Shell。
+func (w *workspace) OpenManagedSSH(target, config string, focus bool) (control.CreatedSession, error) {
+	if w.managedFactory == nil {
+		return control.CreatedSession{}, errors.New("窗口不支持受管 SSH 会话")
+	}
+	return w.create(func(id string, onExit func(int)) (*pane, error) {
+		return w.managedFactory(id, onExit, target, config)
+	}, "", "", focus)
 }
 
 // SupportsSessionPaste 声明窗口可将粘贴请求路由到指定窗格。
