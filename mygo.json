@@ -2,7 +2,7 @@
   "name": "Who's Typing",
   "slug": "whos-typing",
   "identifier": "dev.whostyping.preview",
-  "version": "4",
+  "version": "5",
   "main": "./cmd/whos-typing",
   "macos": {
     "minimumSystemVersion": "13.0",
