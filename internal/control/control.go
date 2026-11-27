@@ -28,6 +28,8 @@ type request struct {
 	Title     string `json:"title,omitempty"`
 	Direction string `json:"direction,omitempty"`
 	Focus     bool   `json:"focus,omitempty"`
+	Target    string `json:"target,omitempty"`
+	Config    string `json:"config,omitempty"`
 }
 
 type response struct {
@@ -41,6 +43,7 @@ type response struct {
 	Version      int             `json:"version,omitempty"`
 	MultiSession bool            `json:"multi_session,omitempty"`
 	SessionPaste bool            `json:"session_paste,omitempty"`
+	ManagedSSH   bool            `json:"managed_ssh,omitempty"`
 	List         *SessionList    `json:"list,omitempty"`
 	Current      *CurrentSession `json:"current,omitempty"`
 	Created      *CreatedSession `json:"created,omitempty"`
@@ -89,6 +92,11 @@ type Diagnostic struct {
 }
 
 type diagnosticProvider interface{ SessionDiagnostic() Diagnostic }
+
+// managedWorkspace 提供显式创建受管 SSH 会话的能力；旧窗口不实现。
+type managedWorkspace interface {
+	OpenManagedSSH(target, config string, focus bool) (CreatedSession, error)
+}
 
 // Server 管理当前用户的 Unix socket 和相关连接。
 type Server struct {
@@ -209,13 +217,14 @@ func handle(conn *net.UnixConn, executor Executor) {
 	}
 	workspace, hasWorkspace := executor.(Workspace)
 	pasteCapability, _ := executor.(pasteWorkspace)
+	managedCapability, _ := executor.(managedWorkspace)
 	negotiated := req.Action == "hello"
 	if negotiated {
 		if !hasWorkspace {
 			_ = json.NewEncoder(conn).Encode(response{Error: "窗口不支持多会话"})
 			return
 		}
-		if err := json.NewEncoder(conn).Encode(response{Version: protocolVersion, MultiSession: true, SessionPaste: pasteCapability != nil && pasteCapability.SupportsSessionPaste()}); err != nil {
+		if err := json.NewEncoder(conn).Encode(response{Version: protocolVersion, MultiSession: true, SessionPaste: pasteCapability != nil && pasteCapability.SupportsSessionPaste(), ManagedSSH: managedCapability != nil}); err != nil {
 			return
 		}
 		_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
@@ -232,6 +241,21 @@ func handle(conn *net.UnixConn, executor Executor) {
 	}
 	if req.Action == "session.paste" && (!negotiated || req.SessionID == "" || pasteCapability == nil || !pasteCapability.SupportsSessionPaste()) {
 		_ = json.NewEncoder(conn).Encode(response{Error: "未发送粘贴：需要支持粘贴的窗口及完整会话 ID"})
+		return
+	}
+	if req.Action == "ssh.open" {
+		if !negotiated || managedCapability == nil {
+			_ = json.NewEncoder(conn).Encode(response{Error: "当前窗口不支持受管 SSH 会话，请升级 Who's Typing 窗口"})
+			return
+		}
+		reply := response{}
+		created, err := managedCapability.OpenManagedSSH(req.Target, req.Config, req.Focus)
+		if err != nil {
+			reply.Error = err.Error()
+		} else {
+			reply.Created = &created
+		}
+		_ = json.NewEncoder(conn).Encode(reply)
 		return
 	}
 	if hasWorkspace {

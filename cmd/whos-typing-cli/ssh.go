@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"whos-typing/internal/control"
 	"whos-typing/internal/sshlink"
 )
 
@@ -17,14 +18,26 @@ func runSSH(args []string, out, errOut io.Writer) int {
 		config, args = args[1], args[2:]
 	}
 	if len(args) < 2 || (args[0] == "run" && len(args) != 3) || (args[0] != "run" && len(args) != 2) {
-		fmt.Fprintln(errOut, "用法: ssh {connect|status|disconnect} TARGET 或 ssh run TARGET '命令'")
+		fmt.Fprintln(errOut, "用法: ssh {connect|status|disconnect|open} TARGET 或 ssh run TARGET '命令'")
 		return 2
 	}
 	switch args[0] {
-	case "connect", "status", "disconnect", "run":
+	case "connect", "status", "disconnect", "run", "open":
 	default:
 		fmt.Fprintln(errOut, "未知 SSH 操作")
 		return 2
+	}
+	if args[0] == "open" {
+		created, err := control.OpenManagedSSH(args[1], config, false)
+		if err != nil {
+			fmt.Fprintln(errOut, err)
+			return 1
+		}
+		if err := json.NewEncoder(out).Encode(map[string]any{"target": args[1], "session_id": created.SessionID, "tab_id": created.TabID}); err != nil {
+			fmt.Fprintln(errOut, err)
+			return 1
+		}
+		return 0
 	}
 	link, err := sshlink.New(args[1], config)
 	if err != nil {

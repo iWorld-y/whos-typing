@@ -314,3 +314,21 @@ Shell 启动期间，CLI 可能在空提示符准备好前返回「终端尚未�
 - 主会话在开发完成后统一 review，开发代理修复旧请求取消影响新接入、原有 EXIT trap 参数被改变及已完成请求被误报未知的问题。相关回归先复现失败，再验证通过。
 - 校验过的 MyGo v0.7.4 原生库支持全量测试实际运行，无跳过。review 修复后完成受影响包测试和 race；最终诊断调整运行定向测试和 race。主会话独立执行最终构建、vet 和关键回归抽查，均通过。
 - 后续 Shell 协议修复通过隔离 Bash 测试验证，未重复 GUI 全流程。未验证真实 SSH、物理键盘或系统输入法，自动化结果不代替这些验收。
+
+2026-11-27 实现并验证受管 SSH 会话（OpenSpec `stateful-ssh-session`）：
+
+- 远端执行组件 `internal/shell/managed_component.py` 为 Bash 分配真实控制终端（`pty.fork`），FD 0/1/2 接同一 slave，另用 FD 3 收命令、FD 4 发结构化状态；`set -m` 启用作业控制。命令在原 Bash 顶层 `eval`，`cd`/`export`/`source` 状态跨请求保留。登录 Shell 初始化可能混入 stdout，组件先打随机同步标记，后端从标记后解析长度前缀帧。
+- 最小验证探针 `scripts/managed-probe/`（本地 PTY 与隔离 sshd 两条路径）覆盖：超时分支自检、状态延续、提示符与伪造通知、前台 stdin、Ctrl+C 保留 Bash 与目录、SIGWINCH、子 Shell 前台、Bash 自身退出、人工接管/交还及未提交输入保留。所有等待用单调时钟截止时间，清理时继续消费 PTY 输出、关写端、`waitpid(WNOHANG)` 收尸，超时只终止本用例进程组。bash 3.2 的 `read -t` 超时返回 1（4+ 返回 >128），人工模式据此轮询，规范模式下未提交输入留在内核行缓冲不丢失。
+- 后端 `internal/shell/managed.go` 等集中处理执行准入、输入归属、交还、空闲 60 秒计时和按请求 ID 关联完成通知；CLI 超时/断线只结束等待并报告结果未知，远端明确退出码（含 255）原样返回。`sshlink.OpenChannel` 复用专属 master，连接不可用或启动失败不回退直连。`ssh open` 经能力协商创建受管标签页，旧窗口拒绝。
+- 隔离验收 `scripts/test-ssh-managed.py`（`-tags e2e` GUI+CLI、临时 sshd、独立控制 socket、仅激活本测试窗口）通过：connect/open、状态延续、实时输出与目录标题、CLI 超时未知、接管 Ctrl+C 退出码 130、交还保留目录、vim 接管编辑退出交还、同目标独立且复用同一 master、分屏不换会话、disconnect 后报告失效并拒绝新命令。
+- 全量 `go test -count=1 ./...`、`make build`、`go vet`、OpenSpec 严格校验通过；设置校验过的上游原生库后 `internal/app`、`internal/control`、`internal/shell` 竞态检查通过，原生终端测试实际运行。
+- 限制：自动化树不暴露标签右键原生菜单，未能在 GUI 自动化中点击「关闭标签页/关闭当前窗格」，关闭只释放对应会话由后端单元/工作区测试覆盖；窗口尺寸变化经组件级 SIGWINCH 验证，未做 GUI 拖动 resize。既有 `scripts/test-ssh-local.py` 在本机因登录 Shell 初始化向 stdout 打印文本而断言失败，属环境噪声，`ssh run` 转发与退出码本身正常；受管路径用同步标记规避。自动化输入不代替物理键盘、系统剪贴板或真实远端服务器验收。
+
+同日修复主会话独立复现的四个审查问题（仅无窗口测试与隔离 sshd/PTY，未启动真实桌面窗口）：
+
+- 迟到 DONE 匹配已放弃请求后同样恢复 Agent 就绪与空闲计时；人工接管时交回输入归属。回归从 Agent 空闲起步，避免初始 READY 遮蔽。
+- 人工空提示符的空回车也发 HDONE 消费通知，pending 不再永久挂起；非空输入的提交保护不变。
+- 粘贴改为远端完整写入回执（POK/PFAIL）后才报告成功；组件用非阻塞写循环处理短写与 EAGAIN。发送前取消明确未发送且不补发，已开始写入但断线/无法确认报告 `ErrPasteUnknown`；接管与关闭按是否已出队区分未发送/未知。
+- Close 丢弃队列中未发送的请求并明确报告未执行，已出队写入的请求报告未知；取消未发送请求同时清理输出文件。finish/finishPaste 幂等，迟到回执不改变其他请求。
+- 每项均先临时回退修复确认回归测试失败，再恢复验证通过。新增探针用例 human_empty_enter 与 paste_full_write（200KB 原始模式读取，验证短写循环与数据完整），本地 PTY 与隔离 sshd 各 11 项全部通过。
+- `GOWORK=off go test -count=1 -timeout=150s ./...`、设置校验过原生库后的 app/control/shell 竞态检查、`make build`、`go vet`、OpenSpec 严格校验均通过。本轮未做真实桌面 GUI 验收；既有 GUI 记录为修复前版本，不能替代修复后的桌面测试。

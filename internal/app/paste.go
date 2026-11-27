@@ -34,23 +34,23 @@ func (c controller) Paste(ctx context.Context, text string, notify func() error)
 		target.PasswordPrompt = isPasswordPrompt(term.Text())
 		return target
 	}, func(wait context.Context) error {
-		return c.confirmPaste(wait, text, notify)
+		return confirmPanePaste(wait, c.pane, c.update, text, notify)
 	})
 }
 
-func (c controller) confirmPaste(ctx context.Context, text string, notify func() error) error {
+func confirmPanePaste(ctx context.Context, p *pane, update func(func()), text string, notify func() error) error {
 	if err := notify(); err != nil {
 		return err
 	}
 	req := &panePaste{text: text, answer: make(chan bool, 1), ctx: ctx}
-	c.update(func() {
+	update(func() {
 		if ctx.Err() == nil {
-			c.pane.paste = req
+			p.paste = req
 		}
 	})
-	defer c.update(func() {
-		if c.pane.paste == req {
-			c.pane.paste = nil
+	defer update(func() {
+		if p.paste == req {
+			p.paste = nil
 		}
 	})
 	select {

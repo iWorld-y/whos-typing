@@ -82,6 +82,9 @@ func Run() error {
 		ws = newWorkspace(ids, func(id string, onExit func(int)) (*pane, error) {
 			return makePane(server.Dir(), win, confirmation, ws, id, onExit)
 		})
+		ws.managedFactory = func(id string, onExit func(int), target, config string) (*pane, error) {
+			return makeManagedPane(server.Dir(), win, ws, id, onExit, target, config)
+		}
 		view.workspace = ws
 		view.openSettings = settingsWindow.open
 		if prefsErr != nil {

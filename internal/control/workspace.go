@@ -58,6 +58,7 @@ type clientConn struct {
 	conn         net.Conn
 	read         *bufio.Reader
 	sessionPaste bool
+	managedSSH   bool
 }
 
 func connectWorkspace(path string) (*clientConn, error) {
@@ -77,6 +78,7 @@ func connectWorkspace(path string) (*clientConn, error) {
 		return nil, errors.New("窗口不支持多会话，请升级 Who's Typing 窗口")
 	}
 	c.sessionPaste = reply.SessionPaste
+	c.managedSSH = reply.ManagedSSH
 	_ = conn.SetDeadline(time.Time{})
 	return c, nil
 }
@@ -148,6 +150,35 @@ func currentWorkspace(path string) (CurrentSession, error) {
 // CreateTab 新建标签页。
 func CreateTab(focus bool) (CreatedSession, error) {
 	return createWorkspace(socketPath(directory()), request{Action: "tab.new", Focus: focus})
+}
+
+// OpenManagedSSH 显式创建受管 SSH 会话；旧窗口拒绝该入口，不回退本地 Shell。
+func OpenManagedSSH(target, config string, focus bool) (CreatedSession, error) {
+	return openManagedSSH(socketPath(directory()), target, config, focus)
+}
+func openManagedSSH(path, target, config string, focus bool) (CreatedSession, error) {
+	c, err := connectWorkspace(path)
+	if err != nil {
+		return CreatedSession{}, err
+	}
+	defer c.conn.Close()
+	if !c.managedSSH {
+		return CreatedSession{}, errors.New("当前窗口不支持受管 SSH 会话，请升级 Who's Typing 窗口")
+	}
+	if err := c.send(request{Action: "ssh.open", Target: target, Config: config, Focus: focus}); err != nil {
+		return CreatedSession{}, err
+	}
+	r, err := c.reply()
+	if err != nil {
+		return CreatedSession{}, fmt.Errorf("终端连接已断开，创建结果未知: %w", err)
+	}
+	if r.Error != "" {
+		return CreatedSession{}, errors.New(r.Error)
+	}
+	if r.Created == nil || r.Created.SessionID == "" || r.Created.TabID == "" {
+		return CreatedSession{}, errors.New("创建会话响应格式错误")
+	}
+	return *r.Created, nil
 }
 
 // RenameTab 按稳定标签页 ID 更新名称。

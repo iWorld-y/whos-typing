@@ -6,7 +6,7 @@ import (
 )
 
 func TestSSHInvalidArguments(t *testing.T) {
-	for _, args := range [][]string{{"ssh"}, {"ssh", "run", "host"}, {"ssh", "connect", "-oBad"}, {"ssh", "--config"}, {"ssh", "nope", "host"}} {
+	for _, args := range [][]string{{"ssh"}, {"ssh", "run", "host"}, {"ssh", "connect", "-oBad"}, {"ssh", "--config"}, {"ssh", "nope", "host"}, {"ssh", "open"}, {"ssh", "open", "host", "extra"}} {
 		var out, err bytes.Buffer
 		if code := run(args, &out, &err); code != 2 {
 			t.Fatalf("%v: %d %s", args, code, err.String())
